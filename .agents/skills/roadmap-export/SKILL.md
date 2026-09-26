@@ -13,6 +13,7 @@ The beads database stays local; only a filtered JSONL export is public.
 
 ```python
 import json
+
 out = []
 for line in open("/tmp/svid-all.jsonl"):
     issue = json.loads(line)
