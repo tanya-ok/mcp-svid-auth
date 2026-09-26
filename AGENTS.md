@@ -26,6 +26,12 @@ A proof of concept: SPIFFE JWT-SVIDs used as OAuth client credentials for MCP se
 
 Run `make check` before every commit. Run `make demo` after any change to `deploy/`, token formats, or the auth flow, and update the README Status table with the real result.
 
+## Documentation
+
+- The flag tables, fixed values and policy schema in `docs/configuration.md` are generated from the code between `<!-- BEGIN GENERATED: config -->` and `<!-- END GENERATED: config -->`. Do not edit that block by hand; prose outside the markers is hand-written.
+- After changing CLI flags, help text, the fixed values it lists, or the policy format (`policy.py`, `deploy/policy.yaml`), run `uv run python scripts/gen_config_docs.py --write` and commit the result.
+- `make check` and CI run `--check` and fail on drift.
+
 ## Security invariants (do not weaken)
 
 1. **Deny by default.** A tool without a declared scope must stop the server from starting. Unknown tools and unparseable bodies get 400. Oversized bodies get 413.
