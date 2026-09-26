@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -36,6 +37,10 @@ from mcp_svid_auth.spiffe_keys import (
 CLIENT_ASSERTION_TYPE = "urn:ietf:params:oauth:client-assertion-type:jwt-spiffe"
 ACCESS_TOKEN_ALG = "ES256"  # noqa: S105 - algorithm name, not a secret
 DEFAULT_TOKEN_TTL = 300
+DEFAULT_MAX_SVID_LIFETIME = 300
+_CLOCK_SKEW = 30
+# RFC 6749 section 3.3 scope-token characters.
+_SCOPE_TOKEN = re.compile(r"[\x21\x23-\x5B\x5D-\x7E]+")
 _NO_STORE = {"Cache-Control": "no-store", "Pragma": "no-cache"}
 
 
@@ -45,6 +50,7 @@ class AuthzServer:
     policy: Policy
     resolver: KeyResolver
     token_ttl: int = DEFAULT_TOKEN_TTL
+    max_svid_lifetime: int = DEFAULT_MAX_SVID_LIFETIME
     audit: AuditLog = field(default_factory=lambda: AuditLog(component="authz"))
     signing_key: ec.EllipticCurvePrivateKey = field(
         default_factory=lambda: ec.generate_private_key(ec.SECP256R1())
@@ -84,25 +90,40 @@ class AuthzServer:
                 raise AuthError("invalid_client", "foreign trust domain")
             key = self.resolver.resolve(trust_domain, header.get("kid"))
         except AuthError as exc:
-            raise AuthError(exc.code, exc.description, 401) from exc
+            raise AuthError(exc.code, exc.description, 401, exc.detail) from exc
+        except Exception as exc:
+            raise AuthError(
+                "temporarily_unavailable", "trust bundle unavailable", 503, repr(exc)
+            ) from exc
         try:
             claims = jwt.decode(
                 assertion,
                 key,
                 algorithms=[alg],
                 audience=self.issuer,
-                options={"require": ["sub", "aud", "exp"]},
+                options={"require": ["sub", "aud", "exp", "iat"]},
+                leeway=_CLOCK_SKEW,
             )
         except jwt.ExpiredSignatureError as exc:
             raise AuthError("invalid_client", "client assertion expired", 401) from exc
         except jwt.InvalidAudienceError as exc:
             raise AuthError("invalid_client", "client assertion audience mismatch", 401) from exc
         except jwt.PyJWTError as exc:
-            raise AuthError("invalid_client", f"client assertion invalid: {exc}", 401) from exc
+            raise AuthError(
+                "invalid_client", "client assertion invalid", 401, f"{type(exc).__name__}: {exc}"
+            ) from exc
         aud = claims["aud"]
         if aud not in (self.issuer, [self.issuer]):
             # The draft requires the issuer as the sole audience value.
             raise AuthError("invalid_client", "client assertion audience must be issuer only", 401)
+        lifetime = int(claims["exp"]) - int(claims["iat"])
+        if lifetime > self.max_svid_lifetime:
+            raise AuthError(
+                "invalid_client",
+                "client assertion lifetime too long",
+                401,
+                f"exp - iat = {lifetime}s, max {self.max_svid_lifetime}s",
+            )
         return sub
 
     def issue(self, form: dict[str, str]) -> dict[str, Any]:
@@ -120,9 +141,7 @@ class AuthzServer:
         client_id = form.get("client_id")
         if client_id is not None and client_id != spiffe_id:
             raise AuthError("invalid_client", "client_id does not match SVID", 401)
-        raw_scope = form.get("scope")
-        requested = set(raw_scope.split()) if raw_scope else None
-        scopes = self.policy.grant(spiffe_id, resource, requested)
+        scopes = self.policy.grant(spiffe_id, resource, parse_scope(form.get("scope")))
         now = int(time.time())
         claims = {
             "iss": self.issuer,
@@ -148,11 +167,16 @@ class AuthzServer:
         }
 
     async def token_endpoint(self, request: Request) -> Response:
-        form = {k: str(v) for k, v in (await request.form()).items()}
+        items = (await request.form()).multi_items()
+        form = {k: str(v) for k, v in items}
         try:
+            if len(form) != len(items):
+                # RFC 6749 section 3.2: request parameters MUST NOT be included more than once.
+                raise AuthError("invalid_request", "repeated request parameter")
             body = self.issue(form)
         except AuthError as exc:
-            self._audit(form, "deny", f"{exc.code}: {exc.description}")
+            detail = f" ({exc.detail})" if exc.detail else ""
+            self._audit(form, "deny", f"{exc.code}: {exc.description}{detail}")
             return JSONResponse(
                 {"error": exc.code, "error_description": exc.description},
                 status_code=exc.status,
@@ -188,6 +212,16 @@ class AuthzServer:
         )
 
 
+def parse_scope(raw: str | None) -> set[str]:
+    """Parse a scope parameter. Explicit scope is required; tokens separated by single spaces."""
+    if not raw:
+        raise AuthError("invalid_scope", "scope parameter is required")
+    tokens = raw.split(" ")
+    if not all(_SCOPE_TOKEN.fullmatch(t) for t in tokens):
+        raise AuthError("invalid_scope", "malformed scope parameter")
+    return set(tokens)
+
+
 def main(argv: list[str] | None = None) -> None:
     import uvicorn  # noqa: PLC0415
 
@@ -199,6 +233,12 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--static-jwks", type=Path, help="test mode: JWT-SVID bundle as JWKS file")
     parser.add_argument("--socket", help="Workload API socket, default SPIFFE_ENDPOINT_SOCKET")
     parser.add_argument("--audit-log", type=Path)
+    parser.add_argument(
+        "--max-svid-lifetime",
+        type=int,
+        default=DEFAULT_MAX_SVID_LIFETIME,
+        help="reject JWT-SVIDs whose exp - iat exceeds this many seconds",
+    )
     args = parser.parse_args(argv)
 
     policy = Policy.load(args.policy)
@@ -212,6 +252,7 @@ def main(argv: list[str] | None = None) -> None:
         policy=policy,
         resolver=resolver,
         audit=AuditLog(path=args.audit_log, component="authz"),
+        max_svid_lifetime=args.max_svid_lifetime,
     )
     uvicorn.run(server.app(), host=args.host, port=args.port)
 

@@ -66,8 +66,8 @@ async def fetch_access_token(
     resource: str,
     svid_source: SvidSource,
     *,
+    scope: str,
     spiffe_id: str | None = None,
-    scope: str | None = None,
     http: HttpFactory = default_http,
 ) -> dict[str, Any]:
     found = await discover(resource, http)
@@ -76,11 +76,10 @@ async def fetch_access_token(
         "client_assertion_type": CLIENT_ASSERTION_TYPE,
         "client_assertion": svid_source.fetch(found.issuer),
         "resource": resource,
+        "scope": scope,
     }
     if spiffe_id:
         form["client_id"] = spiffe_id
-    if scope:
-        form["scope"] = scope
     async with http() as client:
         response = await client.post(found.token_endpoint, data=form)
     body: dict[str, Any] = response.json()
@@ -150,7 +149,9 @@ async def run(args: argparse.Namespace) -> int:
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="Agent that authenticates with its JWT-SVID")
     parser.add_argument("--resource", required=True, help="MCP server canonical URI")
-    parser.add_argument("--scope", help="space separated scopes, default: all allowed")
+    parser.add_argument(
+        "--scope", required=True, help="space separated scopes, e.g. 'notes:read notes:write'"
+    )
     parser.add_argument("--spiffe-id", help="sent as client_id")
     parser.add_argument("--socket", help="Workload API socket, default SPIFFE_ENDPOINT_SOCKET")
     parser.add_argument(

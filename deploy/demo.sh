@@ -33,19 +33,20 @@ run() { docker compose run --rm --no-deps "$@" || true; }
 
 echo
 echo "== 1. research agent on notes-a: read and write allowed"
-run agent-research --resource "$A" --spiffe-id spiffe://example.org/agent/research
+run agent-research --resource "$A" --scope "notes:read notes:write" \
+  --spiffe-id spiffe://example.org/agent/research
 
 echo
 echo "== 2. research agent on notes-b: read allowed, write denied by scope (403)"
-run agent-research --resource "$B"
+run agent-research --resource "$B" --scope notes:read
 
 echo
 echo "== 3. intruder: valid SVID, not allowlisted, no token"
-run agent-intruder --resource "$A"
+run agent-intruder --resource "$A" --scope notes:read
 
 echo
 echo "== 4. replay: token issued for notes-a sent to notes-b (401, wrong audience)"
-run agent-research --resource "$A" --steal-token "$B"
+run agent-research --resource "$A" --scope "notes:read notes:write" --steal-token "$B"
 
 echo
 echo "== audit lines"

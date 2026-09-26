@@ -34,7 +34,7 @@ class Policy:
             raise ValueError(f"policy file {path} is not a mapping")
         return cls.from_dict(data)
 
-    def grant(self, spiffe_id: str, resource: str, requested: set[str] | None) -> frozenset[str]:
+    def grant(self, spiffe_id: str, resource: str, requested: set[str]) -> frozenset[str]:
         """Return the scopes to issue, or raise AuthError."""
         resources = self.grants.get(spiffe_id)
         if resources is None:
@@ -42,8 +42,6 @@ class Policy:
         allowed = resources.get(resource.rstrip("/"))
         if allowed is None:
             raise AuthError("invalid_target", "resource not allowed for this SPIFFE ID")
-        if requested is None:
-            return allowed
         if not requested <= allowed:
             raise AuthError("invalid_scope", "requested scope not allowed")
         return frozenset(requested)
