@@ -17,7 +17,7 @@ x-workload: &workload
 
 services:
   spire-server:
-    image: ghcr.io/spiffe/spire-server:1.15.3
+    image: ghcr.io/spiffe/spire-server:1.15.3@sha256:4082f30d3e0ddc4000a171392c4ea174345ee44d161ee917c70b97b2ecfba141
     command: ["-config", "/opt/spire/conf/server/server.conf"]
     volumes:
       - ./spire/server.conf:/opt/spire/conf/server/server.conf:ro
@@ -32,7 +32,7 @@ services:
       retries: 30
 
   spire-agent:
-    image: ghcr.io/spiffe/spire-agent:1.15.3
+    image: ghcr.io/spiffe/spire-agent:1.15.3@sha256:41b0dcd8b258a69db9e2768292a060766fb76fd866e4bc925849981ea1b825ff
     command:
       - "-config"
       - "/opt/spire/conf/agent/agent.conf"
