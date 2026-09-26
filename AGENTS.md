@@ -1,6 +1,6 @@
 # AGENTS.md
 
-Instructions for AI coding agents (and humans) working in this repository. Vendor-neutral; `CLAUDE.md` points here.
+Instructions for AI coding agents (and humans) working in this repository. Vendor-neutral; `CLAUDE.md` points here. Project skills live in `.claude/skills/` (`roadmap-export`, `invariant-check`).
 
 ## What this project is
 
