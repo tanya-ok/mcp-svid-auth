@@ -1,0 +1,71 @@
+[project]
+site_name = "mcp-svid-auth"
+site_description = "Proof of concept: SPIFFE JWT-SVIDs as OAuth client credentials for MCP servers"
+site_author = "Tanya Babitskaya"
+site_url = "https://tanya-ok.github.io/mcp-svid-auth/"
+copyright = "Copyright &copy; 2026 Tanya Babitskaya. Apache-2.0."
+repo_url = "https://github.com/tanya-ok/mcp-svid-auth"
+repo_name = "tanya-ok/mcp-svid-auth"
+edit_uri = "edit/main/docs/"
+docs_dir = "docs"
+site_dir = "site"
+
+nav = [
+  { "Home" = "index.md" },
+  { "Quickstart" = "quickstart.md" },
+  { "Architecture" = "architecture.md" },
+  { "Demo scenarios" = "demo.md" },
+  { "Security model" = "security.md" },
+  { "stdio wrapper" = "stdio-wrapper.md" },
+  { "Configuration" = "configuration.md" },
+  { "References" = "references.md" },
+]
+
+[project.theme]
+language = "en"
+features = [
+  "content.action.edit",
+  "content.code.copy",
+  "navigation.footer",
+  "navigation.indexes",
+  "navigation.path",
+  "navigation.sections",
+  "navigation.top",
+  "navigation.tracking",
+  "search.highlight",
+]
+
+[project.theme.font]
+text = "IBM Plex Sans"
+code = "IBM Plex Mono"
+
+[[project.theme.palette]]
+media = "(prefers-color-scheme: dark)"
+scheme = "slate"
+toggle.icon = "lucide/sun"
+toggle.name = "Switch to light mode"
+
+[[project.theme.palette]]
+media = "(prefers-color-scheme: light)"
+scheme = "default"
+toggle.icon = "lucide/moon"
+toggle.name = "Switch to dark mode"
+
+[[project.extra.social]]
+icon = "fontawesome/brands/github"
+link = "https://github.com/tanya-ok/mcp-svid-auth"
+
+[project.markdown_extensions]
+admonition = {}
+attr_list = {}
+md_in_html = {}
+tables = {}
+toc.permalink = true
+pymdownx.details = {}
+pymdownx.highlight.anchor_linenums = true
+pymdownx.highlight.pygments_lang_class = true
+pymdownx.inlinehilite = {}
+pymdownx.superfences.custom_fences = [
+  { name = "mermaid", class = "mermaid", format = "pymdownx.superfences.fence_code_format" },
+]
+pymdownx.tabbed.alternate_style = true

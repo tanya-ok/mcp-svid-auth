@@ -35,6 +35,9 @@ dev = [
     "mypy>=1.16",
     "types-pyyaml>=6.0.12.20260906",
 ]
+docs = [
+    "zensical>=0.0.65,<0.1",
+]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/mcp_svid_auth"]
