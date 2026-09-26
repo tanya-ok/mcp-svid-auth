@@ -4,6 +4,7 @@ The server:
 - serves Protected Resource Metadata (RFC 9728),
 - validates bearer tokens locally (signature via authz JWKS, iss, exp, aud == own URI),
 - enforces a scope per tool and answers 403 insufficient_scope otherwise,
+- denies tools/call for any tool without a declared scope, and unparseable bodies,
 - writes one JSON audit line per decision,
 - never forwards the incoming token.
 """
@@ -44,12 +45,10 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from mcp_svid_auth.audit import AuditLog
 
-TOOL_SCOPES: dict[str, str] = {
-    "notes.search": "notes:read",
-    "notes.write": "notes:write",
-}
 _JWKS_CACHE_SECONDS = 60
-_ACCESS_TOKEN_ALGS = ["ES256", "RS256"]
+_ACCESS_TOKEN_ALGS = ["ES256"]
+_ACCESS_TOKEN_TYP = "at+jwt"  # noqa: S105 - media type, not a secret
+MAX_BODY_BYTES = 1024 * 1024
 
 
 @dataclass
@@ -80,7 +79,10 @@ class AudienceBoundVerifier:
 
     async def verify_token(self, token: str) -> AccessToken | None:
         try:
-            kid = jwt.get_unverified_header(token).get("kid")
+            header = jwt.get_unverified_header(token)
+            if header.get("typ") != _ACCESS_TOKEN_TYP:
+                raise jwt.InvalidTokenError(f"typ must be {_ACCESS_TOKEN_TYP}")
+            kid = header.get("kid")
             keys = jwt.PyJWKSet.from_dict(self.jwks()).keys
             key = next((k.key for k in keys if k.key_id == kid), None)
             if key is None:
@@ -91,7 +93,7 @@ class AudienceBoundVerifier:
                 algorithms=_ACCESS_TOKEN_ALGS,
                 audience=self.resource,
                 issuer=self.issuer,
-                options={"require": ["iss", "sub", "aud", "exp", "scope"]},
+                options={"require": ["iss", "sub", "aud", "exp", "iat", "scope"]},
             )
         except jwt.PyJWTError as exc:
             self.audit.write(
@@ -104,7 +106,7 @@ class AudienceBoundVerifier:
         return AccessToken(
             token=token,
             client_id=str(claims.get("client_id", claims["sub"])),
-            scopes=str(claims["scope"]).split(),
+            scopes=str(claims["scope"]).split(" "),
             expires_at=int(claims["exp"]),
             resource=self.resource,
             subject=str(claims["sub"]),
@@ -121,10 +123,17 @@ def _unverified_sub(token: str) -> str | None:
 
 
 class ToolScopeGuard:
-    """Checks the scope for a tools/call before the MCP layer sees it."""
+    """Checks the scope for a tools/call before the MCP layer sees it. Deny by default."""
 
-    def __init__(self, app: ASGIApp, resource_metadata_url: str, audit: AuditLog) -> None:
+    def __init__(
+        self,
+        app: ASGIApp,
+        tool_scopes: dict[str, str],
+        resource_metadata_url: str,
+        audit: AuditLog,
+    ) -> None:
         self.app = app
+        self.tool_scopes = tool_scopes
         self.resource_metadata_url = resource_metadata_url
         self.audit = audit
 
@@ -132,14 +141,31 @@ class ToolScopeGuard:
         if scope["type"] != "http" or scope["method"] != "POST":
             await self.app(scope, receive, send)
             return
-        body = await _read_body(receive)
         user = scope.get("user")
         spiffe_id = user.access_token.subject if isinstance(user, AuthenticatedUser) else None
         granted = set(user.scopes) if isinstance(user, AuthenticatedUser) else set()
-        for call in _tool_calls(body):
-            required = TOOL_SCOPES.get(call)
+        body = await _read_body(receive, MAX_BODY_BYTES)
+        if body is None:
+            self.audit.write(
+                spiffe_id=spiffe_id, tool=None, decision="deny", reason="request body too large"
+            )
+            await _error(send, 413, "invalid_request", "request body too large")
+            return
+        calls = _tool_calls(body)
+        if calls is None:
+            self.audit.write(
+                spiffe_id=spiffe_id, tool=None, decision="deny", reason="unparseable request body"
+            )
+            await _error(send, 400, "invalid_request", "request body is not valid JSON-RPC")
+            return
+        for call in calls:
+            required = self.tool_scopes.get(call)
             if required is None:
-                continue  # unknown tool: let MCP answer with its own error
+                self.audit.write(
+                    spiffe_id=spiffe_id, tool=call, decision="deny", reason="unknown tool"
+                )
+                await _error(send, 400, "invalid_request", "unknown tool")
+                return
             if required not in granted:
                 self.audit.write(
                     spiffe_id=spiffe_id,
@@ -155,13 +181,38 @@ class ToolScopeGuard:
         await self.app(scope, _replay(body, receive), send)
 
 
-async def _read_body(receive: Receive) -> bytes:
+class AuditedRequireAuth:
+    """RequireAuthMiddleware plus an audit line for requests that carry no bearer token.
+
+    Invalid tokens are audited by the verifier, so only the missing-token case is logged here.
+    """
+
+    def __init__(self, app: ASGIApp, resource_metadata_url: str, audit: AuditLog) -> None:
+        self.inner = RequireAuthMiddleware(app, [], AnyHttpUrl(resource_metadata_url))
+        self.audit = audit
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if not isinstance(scope.get("user"), AuthenticatedUser):
+            headers = dict(scope.get("headers", []))
+            auth = headers.get(b"authorization", b"")
+            if not auth.lower().startswith(b"bearer "):
+                self.audit.write(spiffe_id=None, tool=None, decision="deny", reason="missing_token")
+        await self.inner(scope, receive, send)
+
+
+async def _read_body(receive: Receive, limit: int) -> bytes | None:
+    """Read the full request body, or return None once it exceeds `limit` bytes."""
     chunks: list[bytes] = []
+    size = 0
     while True:
         message = await receive()
         if message["type"] != "http.request":
             break
-        chunks.append(message.get("body", b""))
+        chunk = message.get("body", b"")
+        size += len(chunk)
+        if size > limit:
+            return None
+        chunks.append(chunk)
         if not message.get("more_body", False):
             break
     return b"".join(chunks)
@@ -180,19 +231,39 @@ def _replay(body: bytes, receive: Receive) -> Receive:
     return inner
 
 
-def _tool_calls(body: bytes) -> list[str]:
+def _tool_calls(body: bytes) -> list[str] | None:
+    """Tool names in a JSON-RPC message or batch. None when the body cannot be trusted."""
     try:
         payload = json.loads(body)
     except ValueError:
-        return []
+        return None
     messages = payload if isinstance(payload, list) else [payload]
     names: list[str] = []
     for msg in messages:
-        if isinstance(msg, dict) and msg.get("method") == "tools/call":
+        if not isinstance(msg, dict):
+            return None
+        if msg.get("method") == "tools/call":
             params = msg.get("params")
             name = params.get("name") if isinstance(params, dict) else None
-            names.append(str(name))
+            if not isinstance(name, str):
+                return None
+            names.append(name)
     return names
+
+
+async def _error(send: Send, status: int, error: str, description: str) -> None:
+    body = json.dumps({"error": error, "error_description": description}).encode()
+    await send(
+        {
+            "type": "http.response.start",
+            "status": status,
+            "headers": [
+                (b"content-type", b"application/json"),
+                (b"content-length", str(len(body)).encode()),
+            ],
+        }
+    )
+    await send({"type": "http.response.body", "body": body})
 
 
 async def _forbidden(send: Send, required: str, resource_metadata_url: str) -> None:
@@ -229,18 +300,27 @@ class NotesStore:
         return len(self.notes)
 
 
-def build_mcp(name: str, store: NotesStore) -> MCPServer:
+def build_mcp(name: str, store: NotesStore) -> tuple[MCPServer, dict[str, str]]:
+    """Register tools together with the scope each one needs."""
     mcp: MCPServer = MCPServer(name=name)
+    scopes: dict[str, str] = {}
 
-    @mcp.tool(name="notes.search", description="Search notes. Read only.")
+    def tool(tool_name: str, scope: str, description: str) -> Callable[[Any], Any]:
+        scopes[tool_name] = scope
+        return mcp.tool(name=tool_name, description=description)
+
+    @tool("notes.search", "notes:read", "Search notes. Read only.")
     def search(query: str) -> list[str]:
         return store.search(query)
 
-    @mcp.tool(name="notes.write", description="Append a note.")
+    @tool("notes.write", "notes:write", "Append a note.")
     def write(text: str) -> str:
         return f"stored note #{store.write(text)}"
 
-    return mcp
+    registered = {t.name for t in mcp._tool_manager.list_tools()}
+    if registered != set(scopes):
+        raise RuntimeError(f"tools without a declared scope: {registered - set(scopes)}")
+    return mcp, scopes
 
 
 def create_app(  # noqa: PLR0913
@@ -254,7 +334,7 @@ def create_app(  # noqa: PLR0913
     allowed_hosts: list[str] | None = None,
 ) -> Starlette:
     resource = resource.rstrip("/")
-    mcp = build_mcp(name, store or NotesStore())
+    mcp, tool_scopes = build_mcp(name, store or NotesStore())
     security = TransportSecuritySettings(
         enable_dns_rebinding_protection=allowed_hosts is not None,
         allowed_hosts=allowed_hosts or [],
@@ -268,8 +348,8 @@ def create_app(  # noqa: PLR0913
     resource_url = AnyHttpUrl(resource)
     metadata_url = str(build_resource_metadata_url(resource_url))
     verifier = AudienceBoundVerifier(issuer=issuer, resource=resource, jwks=jwks, audit=audit)
-    guarded = ToolScopeGuard(StreamableHTTPASGIApp(manager), metadata_url, audit)
-    endpoint = RequireAuthMiddleware(guarded, [], AnyHttpUrl(metadata_url))
+    guarded = ToolScopeGuard(StreamableHTTPASGIApp(manager), tool_scopes, metadata_url, audit)
+    endpoint = AuditedRequireAuth(guarded, metadata_url, audit)
     path = urlsplit(resource).path or "/"
 
     @contextlib.asynccontextmanager
@@ -281,7 +361,7 @@ def create_app(  # noqa: PLR0913
         # Exact strings: issuer comparison is simple string comparison (RFC 8414, RFC 9207).
         "resource": resource,
         "authorization_servers": [issuer],
-        "scopes_supported": sorted(set(TOOL_SCOPES.values())),
+        "scopes_supported": sorted(set(tool_scopes.values())),
         "bearer_methods_supported": ["header"],
     }
 
