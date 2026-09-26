@@ -132,21 +132,29 @@ def run_wrapped(
         token_dir.rmdir()
 
 
-def main(argv: list[str] | None = None) -> None:
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
+        prog="mcp-svid-stdio",
         description="Run a stdio MCP server with a short-lived token from the Workload API",
         usage="%(prog)s --resource URI --scope SCOPE [options] -- command [args...]",
     )
     parser.add_argument("--resource", required=True, help="upstream resource the child calls")
     parser.add_argument("--scope", required=True, help="space separated scopes")
     parser.add_argument("--socket", help="Workload API socket, default SPIFFE_ENDPOINT_SOCKET")
-    parser.add_argument("--refresh-margin", type=int, default=60, help="seconds before expiry")
+    parser.add_argument(
+        "--refresh-margin", type=int, default=60, help="seconds before expiry to refresh"
+    )
     parser.add_argument(
         "--export-token-env",
         action="store_true",
         help="also set MCP_ACCESS_TOKEN (weaker: visible in the environment, never refreshed)",
     )
-    parser.add_argument("command", nargs=argparse.REMAINDER)
+    parser.add_argument("command", nargs=argparse.REMAINDER, help="child command, after --")
+    return parser
+
+
+def main(argv: list[str] | None = None) -> None:
+    parser = build_parser()
     args = parser.parse_args(argv)
     command = args.command[1:] if args.command[:1] == ["--"] else args.command
     if not command:

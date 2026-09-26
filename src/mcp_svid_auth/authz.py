@@ -222,24 +222,42 @@ def parse_scope(raw: str | None) -> set[str]:
     return set(tokens)
 
 
-def main(argv: list[str] | None = None) -> None:
-    import uvicorn  # noqa: PLC0415
-
-    parser = argparse.ArgumentParser(description="JWT-SVID to access token bridge (POC)")
-    parser.add_argument("--issuer", required=True, help="public base URL, used as iss and SVID aud")
-    parser.add_argument("--policy", type=Path, required=True)
-    parser.add_argument("--host", default="127.0.0.1")
-    parser.add_argument("--port", type=int, default=8100)
-    parser.add_argument("--static-jwks", type=Path, help="test mode: JWT-SVID bundle as JWKS file")
-    parser.add_argument("--socket", help="Workload API socket, default SPIFFE_ENDPOINT_SOCKET")
-    parser.add_argument("--audit-log", type=Path)
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="mcp-svid-authz", description="JWT-SVID to access token bridge (POC)"
+    )
+    parser.add_argument(
+        "--issuer",
+        required=True,
+        help="public base URL, used as iss and as the required SVID aud; trailing slash removed",
+    )
+    parser.add_argument("--policy", type=Path, required=True, help="path to the policy YAML file")
+    parser.add_argument("--host", default="127.0.0.1", help="listen address")
+    parser.add_argument("--port", type=int, default=8100, help="listen port")
+    parser.add_argument(
+        "--static-jwks",
+        type=Path,
+        help="test mode: JWT-SVID bundle as a JWKS file instead of the Workload API",
+    )
+    parser.add_argument(
+        "--socket", help="Workload API socket for JWT bundles, default SPIFFE_ENDPOINT_SOCKET"
+    )
+    parser.add_argument(
+        "--audit-log", type=Path, help="audit log file (JSON lines, appended), default stderr"
+    )
     parser.add_argument(
         "--max-svid-lifetime",
         type=int,
         default=DEFAULT_MAX_SVID_LIFETIME,
         help="reject JWT-SVIDs whose exp - iat exceeds this many seconds",
     )
-    args = parser.parse_args(argv)
+    return parser
+
+
+def main(argv: list[str] | None = None) -> None:
+    import uvicorn  # noqa: PLC0415
+
+    args = build_parser().parse_args(argv)
 
     policy = Policy.load(args.policy)
     resolver: KeyResolver

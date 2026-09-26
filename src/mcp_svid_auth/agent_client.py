@@ -146,8 +146,10 @@ async def run(args: argparse.Namespace) -> int:
     return 0
 
 
-def main(argv: list[str] | None = None) -> None:
-    parser = argparse.ArgumentParser(description="Agent that authenticates with its JWT-SVID")
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="mcp-svid-agent", description="Agent that authenticates with its JWT-SVID"
+    )
     parser.add_argument("--resource", required=True, help="MCP server canonical URI")
     parser.add_argument(
         "--scope", required=True, help="space separated scopes, e.g. 'notes:read notes:write'"
@@ -159,6 +161,11 @@ def main(argv: list[str] | None = None) -> None:
         metavar="OTHER_RESOURCE",
         help="demo: send the token issued for --resource to OTHER_RESOURCE instead",
     )
+    return parser
+
+
+def main(argv: list[str] | None = None) -> None:
+    parser = build_parser()
     try:
         sys.exit(asyncio.run(run(parser.parse_args(argv))))
     except TokenRequestError as exc:
