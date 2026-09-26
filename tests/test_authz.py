@@ -20,6 +20,7 @@ def _form(assertion: str, **extra: str) -> dict[str, str]:
         "client_assertion_type": CLIENT_ASSERTION_TYPE,
         "client_assertion": assertion,
         "resource": SERVER_A,
+        "scope": "notes:read notes:write",
     }
     form.update(extra)
     return {k: v for k, v in form.items() if v != ""}

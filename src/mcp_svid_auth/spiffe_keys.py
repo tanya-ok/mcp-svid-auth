@@ -138,6 +138,7 @@ class LocalSvidIssuer:
         now = int(time.time())
         claims: dict[str, Any] = {"sub": spiffe_id, "aud": audience, "iat": now, "exp": now + ttl}
         claims.update(extra)
+        claims = {k: v for k, v in claims.items() if v is not None}
         return jwt.encode(claims, self.key, algorithm="ES256", headers={"kid": self.kid})
 
     def source_for(self, spiffe_id: str) -> SvidSource:
