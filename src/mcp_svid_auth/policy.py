@@ -10,6 +10,18 @@ import yaml
 
 from mcp_svid_auth.errors import AuthError
 
+# Keys read by Policy.from_dict: (path, type, meaning). Rendered into docs/configuration.md.
+SCHEMA: tuple[tuple[str, str, str], ...] = (
+    ("trust_domain", "string, required", "Only SVIDs from this trust domain are accepted"),
+    ("clients", "list", "One entry per SPIFFE ID"),
+    ("clients[].spiffe_id", "string, required", "Exact SPIFFE ID (SVID `sub`)"),
+    (
+        "clients[].resources",
+        "map",
+        "Resource URI to list of allowed scopes. Trailing slashes are ignored when matching.",
+    ),
+)
+
 
 @dataclass(frozen=True)
 class Policy:

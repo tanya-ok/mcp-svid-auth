@@ -386,20 +386,32 @@ def create_app(  # noqa: PLR0913
     )
 
 
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog="mcp-svid-notes", description="Notes MCP server (POC)")
+    parser.add_argument(
+        "--name",
+        default="notes",
+        help="server name, also used in the audit component (mcp_server:<name>)",
+    )
+    parser.add_argument(
+        "--resource",
+        required=True,
+        help="canonical URI, e.g. http://host:8101/mcp; must equal the token aud",
+    )
+    parser.add_argument("--issuer", required=True, help="authorization server issuer URL")
+    parser.add_argument("--jwks-uri", help="JWKS location, default <issuer>/jwks.json")
+    parser.add_argument("--host", default="127.0.0.1", help="listen address")
+    parser.add_argument("--port", type=int, default=8101, help="listen port")
+    parser.add_argument(
+        "--audit-log", type=Path, help="audit log file (JSON lines, appended), default stderr"
+    )
+    return parser
+
+
 def main(argv: list[str] | None = None) -> None:
     import uvicorn  # noqa: PLC0415
 
-    parser = argparse.ArgumentParser(description="Notes MCP server (POC)")
-    parser.add_argument("--name", default="notes")
-    parser.add_argument(
-        "--resource", required=True, help="canonical URI, e.g. http://host:8101/mcp"
-    )
-    parser.add_argument("--issuer", required=True, help="authorization server issuer URL")
-    parser.add_argument("--jwks-uri", help="default: <issuer>/jwks.json")
-    parser.add_argument("--host", default="127.0.0.1")
-    parser.add_argument("--port", type=int, default=8101)
-    parser.add_argument("--audit-log", type=Path)
-    args = parser.parse_args(argv)
+    args = build_parser().parse_args(argv)
     issuer = args.issuer.rstrip("/")
     app = create_app(
         name=args.name,
