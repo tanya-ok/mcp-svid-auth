@@ -1,0 +1,96 @@
+# POC only. Run through ./demo.sh, which bootstraps the join token and registration entries.
+name: mcp-svid-auth
+
+x-workload: &workload
+  build:
+    context: ..
+    dockerfile: deploy/Dockerfile
+  image: mcp-svid-auth:local
+  # Shared PID namespace so the agent's unix attestor can inspect workload processes.
+  pid: "service:spire-agent"
+  volumes:
+    - spire-sockets:/run/spire/sockets:ro
+  environment:
+    SPIFFE_ENDPOINT_SOCKET: unix:///run/spire/sockets/agent.sock
+  depends_on:
+    - spire-agent
+
+services:
+  spire-server:
+    image: ghcr.io/spiffe/spire-server:1.15.3
+    command: ["-config", "/opt/spire/conf/server/server.conf"]
+    volumes:
+      - ./spire/server.conf:/opt/spire/conf/server/server.conf:ro
+      - spire-server-data:/opt/spire/data/server
+    healthcheck:
+      test: ["CMD", "/opt/spire/bin/spire-server", "healthcheck"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  spire-agent:
+    image: ghcr.io/spiffe/spire-agent:1.15.3
+    command:
+      - "-config"
+      - "/opt/spire/conf/agent/agent.conf"
+      - "-joinToken"
+      - "${JOIN_TOKEN:-set-by-demo-sh}"
+    # Root so the unix attestor can read /proc of workloads running under other UIDs.
+    user: "0"
+    volumes:
+      - ./spire/agent.conf:/opt/spire/conf/agent/agent.conf:ro
+      - ./.data/bundle.pem:/opt/spire/bootstrap/bundle.pem:ro
+      - spire-sockets:/run/spire/sockets
+    depends_on:
+      spire-server:
+        condition: service_healthy
+
+  authz:
+    <<: *workload
+    user: "1010"
+    command:
+      - mcp-svid-authz
+      - --issuer=http://authz:8100
+      - --policy=/app/deploy/policy.yaml
+      - --host=0.0.0.0
+      - --port=8100
+
+  notes-a:
+    <<: *workload
+    user: "1011"
+    command:
+      - mcp-svid-notes
+      - --name=notes-a
+      - --resource=http://notes-a:8101/mcp
+      - --issuer=http://authz:8100
+      - --host=0.0.0.0
+      - --port=8101
+    depends_on: [authz]
+
+  notes-b:
+    <<: *workload
+    user: "1012"
+    command:
+      - mcp-svid-notes
+      - --name=notes-b
+      - --resource=http://notes-b:8102/mcp
+      - --issuer=http://authz:8100
+      - --host=0.0.0.0
+      - --port=8102
+    depends_on: [authz]
+
+  agent-research:
+    <<: *workload
+    user: "1001"
+    profiles: [agents]
+    entrypoint: ["mcp-svid-agent"]
+
+  agent-intruder:
+    <<: *workload
+    user: "1002"
+    profiles: [agents]
+    entrypoint: ["mcp-svid-agent"]
+
+volumes:
+  spire-server-data:
+  spire-sockets:

@@ -1,0 +1,9 @@
+# Which SPIFFE IDs may get access tokens for which MCP servers, with which scopes.
+# Anything not listed is denied.
+trust_domain: example.org
+clients:
+  - spiffe_id: spiffe://example.org/agent/research
+    resources:
+      http://notes-a:8101/mcp: [notes:read, notes:write]
+      http://notes-b:8102/mcp: [notes:read]
+# spiffe://example.org/agent/intruder has a valid SVID but is deliberately not listed.
