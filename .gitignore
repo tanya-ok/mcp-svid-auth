@@ -10,3 +10,4 @@ build/
 .coverage
 tests/denylist.txt
 var/
+deploy/.data/
