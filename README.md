@@ -2,6 +2,8 @@
 
 Proof of concept. An AI agent authenticates to MCP servers with its SPIFFE workload identity instead of a static API key.
 
+Documentation: https://tanya-ok.github.io/mcp-svid-auth/
+
 ## Problem
 
 MCP client configs often hold long-lived static keys:
