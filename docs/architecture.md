@@ -114,7 +114,7 @@ The authz signing key is a P-256 key generated in memory at start. It rotates on
 Every allow and deny decision in authz and the MCP servers is one JSON line:
 
 ```json
-{"timestamp":"2026-09-26T18:07:11.742+00:00","component":"mcp_server:notes-a","spiffe_id":"spiffe://example.org/agent/research","tool":"notes.write","decision":"deny","reason":"insufficient_scope: needs notes:write"}
+{"timestamp":"2026-09-26T18:07:11.742+00:00","component":"mcp_server:notes-b","spiffe_id":"spiffe://example.org/agent/research","tool":"notes.write","decision":"deny","reason":"insufficient_scope: needs notes:write"}
 ```
 
 | Field | Content |
