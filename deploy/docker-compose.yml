@@ -21,7 +21,10 @@ services:
     command: ["-config", "/opt/spire/conf/server/server.conf"]
     volumes:
       - ./spire/server.conf:/opt/spire/conf/server/server.conf:ro
-      - spire-server-data:/opt/spire/data/server
+    # The image runs as 1000:1000. A tmpfs owned by that UID holds the datastore; state is
+    # discarded on down, which is fine for a demo.
+    tmpfs:
+      - /opt/spire/data/server:uid=1000,gid=1000,mode=0700
     healthcheck:
       test: ["CMD", "/opt/spire/bin/spire-server", "healthcheck"]
       interval: 2s
@@ -92,5 +95,4 @@ services:
     entrypoint: ["mcp-svid-agent"]
 
 volumes:
-  spire-server-data:
   spire-sockets:
