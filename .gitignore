@@ -11,3 +11,4 @@ build/
 tests/denylist.txt
 var/
 deploy/.data/
+site/
