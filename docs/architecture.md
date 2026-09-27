@@ -79,7 +79,7 @@ sequenceDiagram
 
 Steps on the agent side (`agent_client.fetch_access_token`):
 
-0. Before each request, check the URL: `https` only, and every address the host resolves to must be public (not private, loopback, link-local, shared or multicast). A failing URL is refused with `url_refused` and nothing is sent to it. This applies to the resource, the chosen issuer, the `token_endpoint` from the issuer metadata, and the tool call. `--allow-http` and `--allow-private-network` relax the two checks for local and compose setups.
+0. Before each request, check the URL: `https` only, and every address the host resolves to must be public (not private, loopback, link-local, shared or multicast). A failing URL is refused with `url_refused` and nothing is sent to it. This applies to the resource, the chosen issuer, the `token_endpoint` from the issuer metadata, and the tool call. IPv6 addresses that embed an IPv4 address (IPv4-mapped, IPv4-compatible, NAT64 `64:ff9b::/96`) are judged by the embedded address, and site-local `fec0::/10` is refused. `--allow-http` and `--allow-private-network` relax the two checks for local and compose setups; either one emits a `url_policy_relaxed` event on stderr at startup.
 1. Read Protected Resource Metadata. Fail if its `resource` differs from the requested one.
 2. Take the first entry of `authorization_servers` that is on the `--trusted-issuer` allowlist. Refuse with `issuer_refused` if there is none. Comparison is exact after lowercasing scheme and host, dropping the default port and mapping an empty path to `/` (RFC 8414 section 2, RFC 9728 section 3). No prefix match; `/t` and `/t/` differ.
 3. Read that authorization server's metadata. Fail if its `issuer` differs.
