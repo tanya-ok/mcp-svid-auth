@@ -46,7 +46,7 @@ Full list: [References](references.md).
 |---|---|
 | [Quickstart](quickstart.md) | Install, offline checks, the SPIRE demo |
 | [Architecture](architecture.md) | Components and the token flow |
-| [Demo scenarios](demo.md) | The four scenarios and their results |
+| [Demo scenarios](demo.md) | The ten scenarios and their results |
 | [Security model](security.md) | Threat model, checks, non-goals, known gaps |
 | [stdio wrapper](stdio-wrapper.md) | Short-lived tokens for local stdio MCP servers |
 | [Configuration](configuration.md) | CLI flags and the policy file |

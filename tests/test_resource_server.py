@@ -12,7 +12,7 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 
 from mcp_svid_auth.agent_client import call_tool
 from mcp_svid_auth.mcp_server import MAX_BODY_BYTES, NotesStore, build_mcp
-from tests.conftest import ISSUER, RESEARCH, SERVER_A
+from tests.conftest import DEV_URLS, ISSUER, RESEARCH, SERVER_A
 
 pytestmark = pytest.mark.anyio
 
@@ -40,7 +40,9 @@ def _mint(world: Any, headers: dict[str, Any] | None = None, **overrides: Any) -
 
 
 async def _denied_reason(world: Any, token: str) -> str:
-    outcome = await call_tool(SERVER_A, token, "notes.search", {"query": "x"}, http=world.http)
+    outcome = await call_tool(
+        SERVER_A, token, "notes.search", {"query": "x"}, http=world.http, url_policy=DEV_URLS
+    )
     assert outcome.startswith("HTTP 401")
     reason: str = world.audit_lines()[0]["reason"]
     return reason
@@ -59,7 +61,12 @@ async def _raw_post(world: Any, content: bytes, token: str) -> Any:
 async def test_minted_token_is_accepted(world_factory: Any) -> None:
     async with world_factory() as world:
         outcome = await call_tool(
-            SERVER_A, _mint(world), "notes.search", {"query": "welcome"}, http=world.http
+            SERVER_A,
+            _mint(world),
+            "notes.search",
+            {"query": "welcome"},
+            http=world.http,
+            url_policy=DEV_URLS,
         )
     assert "welcome" in outcome
 

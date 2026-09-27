@@ -27,6 +27,7 @@ mcp-svid-authz = "mcp_svid_auth.authz:main"
 mcp-svid-notes = "mcp_svid_auth.mcp_server:main"
 mcp-svid-agent = "mcp_svid_auth.agent_client:main"
 mcp-svid-stdio = "mcp_svid_auth.stdio_wrapper:main"
+mcp-svid-audit-verify = "mcp_svid_auth.audit:main"
 
 [dependency-groups]
 dev = [

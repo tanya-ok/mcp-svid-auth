@@ -1,6 +1,6 @@
 """Generate the configuration reference in docs/configuration.md from the code.
 
-Sources: the argparse parsers of the four console scripts, module constants, the notes server
+Sources: the argparse parsers of the console scripts, module constants, the notes server
 tool registry, policy.SCHEMA and deploy/policy.yaml. Output is deterministic: no timestamps, no
 terminal-width dependent help text.
 
@@ -21,7 +21,7 @@ from typing import Any
 
 import yaml
 
-from mcp_svid_auth import agent_client, authz, mcp_server, spiffe_keys, stdio_wrapper
+from mcp_svid_auth import agent_client, audit, authz, mcp_server, spiffe_keys, stdio_wrapper
 from mcp_svid_auth.policy import SCHEMA, Policy
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -155,6 +155,10 @@ def generate() -> str:
     lines += _command(
         stdio_wrapper.build_parser(),
         [("Exit code when the token cannot be refreshed", str(stdio_wrapper.EXIT_TOKEN_EXPIRED))],
+    )
+    lines += _command(
+        audit.build_parser(),
+        [("Chain", "`prev_hash` = SHA-256 of the JCS form of the previous record, hex")],
     )
     lines += _policy()
     return "\n".join(lines).rstrip("\n") + "\n"

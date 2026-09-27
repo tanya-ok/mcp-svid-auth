@@ -7,7 +7,7 @@ from typing import Any
 import pytest
 
 from mcp_svid_auth.agent_client import TokenRequestError, call_tool, fetch_access_token
-from tests.conftest import INTRUDER, ISSUER, READER, RESEARCH, SERVER_A, SERVER_B
+from tests.conftest import DEV_URLS, INTRUDER, ISSUER, READER, RESEARCH, SERVER_A, SERVER_B
 
 pytestmark = pytest.mark.anyio
 
@@ -24,13 +24,29 @@ async def test_valid_flow_calls_both_tools(world_factory: Any) -> None:
     async with world_factory() as world:
         source = world.spire.source_for(RESEARCH)
         token = await fetch_access_token(
-            SERVER_A, source, scope=RW, spiffe_id=RESEARCH, http=world.http, trusted_issuers=TRUSTED
+            SERVER_A,
+            source,
+            scope=RW,
+            spiffe_id=RESEARCH,
+            http=world.http,
+            url_policy=DEV_URLS,
+            trusted_issuers=TRUSTED,
         )
         found = await call_tool(
-            SERVER_A, token["access_token"], "notes.search", {"query": "welcome"}, http=world.http
+            SERVER_A,
+            token["access_token"],
+            "notes.search",
+            {"query": "welcome"},
+            http=world.http,
+            url_policy=DEV_URLS,
         )
         wrote = await call_tool(
-            SERVER_A, token["access_token"], "notes.write", {"text": "hi"}, http=world.http
+            SERVER_A,
+            token["access_token"],
+            "notes.write",
+            {"text": "hi"},
+            http=world.http,
+            url_policy=DEV_URLS,
         )
     assert "welcome to the notes server" in found
     assert wrote == "stored note #2"
@@ -47,6 +63,7 @@ async def test_intruder_gets_no_token(world_factory: Any) -> None:
                 world.spire.source_for(INTRUDER),
                 scope="notes:read",
                 http=world.http,
+                url_policy=DEV_URLS,
                 trusted_issuers=TRUSTED,
             )
 
@@ -58,10 +75,16 @@ async def test_token_for_a_is_rejected_by_b(world_factory: Any) -> None:
             world.spire.source_for(RESEARCH),
             scope=RW,
             http=world.http,
+            url_policy=DEV_URLS,
             trusted_issuers=TRUSTED,
         )
         outcome = await call_tool(
-            SERVER_B, token["access_token"], "notes.search", {"query": "welcome"}, http=world.http
+            SERVER_B,
+            token["access_token"],
+            "notes.search",
+            {"query": "welcome"},
+            http=world.http,
+            url_policy=DEV_URLS,
         )
     assert outcome.startswith("HTTP 401")
     assert 'error="invalid_token"' in outcome
@@ -78,13 +101,24 @@ async def test_scope_enforced_per_tool(world_factory: Any) -> None:
             world.spire.source_for(READER),
             scope="notes:read",
             http=world.http,
+            url_policy=DEV_URLS,
             trusted_issuers=TRUSTED,
         )
         read = await call_tool(
-            SERVER_A, token["access_token"], "notes.search", {"query": "welcome"}, http=world.http
+            SERVER_A,
+            token["access_token"],
+            "notes.search",
+            {"query": "welcome"},
+            http=world.http,
+            url_policy=DEV_URLS,
         )
         write = await call_tool(
-            SERVER_A, token["access_token"], "notes.write", {"text": "nope"}, http=world.http
+            SERVER_A,
+            token["access_token"],
+            "notes.write",
+            {"text": "nope"},
+            http=world.http,
+            url_policy=DEV_URLS,
         )
     assert "welcome" in read
     assert write.startswith("HTTP 403")
@@ -97,7 +131,17 @@ async def test_scope_enforced_per_tool(world_factory: Any) -> None:
         ("notes.write", "deny"),
     ]
     assert lines[1]["reason"] == "insufficient_scope: needs notes:write"
-    assert set(lines[1]) == {"timestamp", "component", "spiffe_id", "tool", "decision", "reason"}
+    assert set(lines[1]) == {
+        "record_id",
+        "parent_record_id",
+        "prev_hash",
+        "timestamp",
+        "component",
+        "spiffe_id",
+        "tool",
+        "decision",
+        "reason",
+    }
 
 
 async def test_protected_resource_metadata(world_factory: Any) -> None:

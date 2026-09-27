@@ -128,3 +128,25 @@ def test_cleanup_when_first_fetch_fails(token_root: Path) -> None:
     with pytest.raises(ConnectionError):
         run_wrapped(_child("pass"), fetch)
     assert list(token_root.iterdir()) == []
+
+
+def test_env_export_stops_child_when_exported_token_expires(token_root: Path) -> None:
+    issued: list[int] = []
+
+    def fetch() -> dict[str, Any]:
+        issued.append(1)
+        return {"access_token": f"t{len(issued)}", "expires_in": 1}
+
+    started = time.monotonic()
+    code = run_wrapped(_child("import time; time.sleep(30)"), fetch, export_token_env=True)
+    assert code == EXIT_TOKEN_EXPIRED
+    assert time.monotonic() - started < 10
+    assert list(token_root.iterdir()) == []
+
+
+def test_file_mode_child_outlives_first_token(token_root: Path) -> None:
+    def fetch() -> dict[str, Any]:
+        return {"access_token": "t", "expires_in": 1}
+
+    code = run_wrapped(_child("import time; time.sleep(2)"), fetch, margin=0)
+    assert code == 0

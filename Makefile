@@ -17,4 +17,4 @@ demo:
 	./deploy/demo.sh
 
 down:
-	docker compose -f deploy/docker-compose.yml down -v
+	docker compose -f deploy/docker-compose.yml --profile agents --profile scenarios down -v
