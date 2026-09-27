@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import os
 import signal
 import subprocess
@@ -28,7 +29,12 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from mcp_svid_auth.agent_client import fetch_access_token
+from mcp_svid_auth.agent_client import (
+    UntrustedIssuerError,
+    fetch_access_token,
+    issuer_arg,
+    refusal_event,
+)
 from mcp_svid_auth.spiffe_keys import SvidSource, WorkloadApiSvidSource
 
 TokenFetcher = Callable[[], dict[str, Any]]
@@ -136,10 +142,21 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="mcp-svid-stdio",
         description="Run a stdio MCP server with a short-lived token from the Workload API",
-        usage="%(prog)s --resource URI --scope SCOPE [options] -- command [args...]",
+        usage=(
+            "%(prog)s --resource URI --scope SCOPE --trusted-issuer URL [options]"
+            " -- command [args...]"
+        ),
     )
     parser.add_argument("--resource", required=True, help="upstream resource the child calls")
     parser.add_argument("--scope", required=True, help="space separated scopes")
+    parser.add_argument(
+        "--trusted-issuer",
+        action="append",
+        required=True,
+        type=issuer_arg,
+        metavar="URL",
+        help="authorization server issuer the wrapper may mint SVIDs for; repeatable, exact match",
+    )
     parser.add_argument("--socket", help="Workload API socket, default SPIFFE_ENDPOINT_SOCKET")
     parser.add_argument(
         "--refresh-margin", type=int, default=60, help="seconds before expiry to refresh"
@@ -163,21 +180,28 @@ def main(argv: list[str] | None = None) -> None:
     source: SvidSource = WorkloadApiSvidSource(socket_path=args.socket)
 
     def fetch() -> dict[str, Any]:
-        return asyncio.run(fetch_access_token(args.resource, source, scope=args.scope))
+        return asyncio.run(
+            fetch_access_token(
+                args.resource, source, scope=args.scope, trusted_issuers=args.trusted_issuer
+            )
+        )
 
     def forward_signals(child: subprocess.Popen[bytes]) -> None:
         for sig in (signal.SIGINT, signal.SIGTERM):
             signal.signal(sig, lambda s, _f: child.send_signal(s))
 
-    sys.exit(
-        run_wrapped(
+    try:
+        code = run_wrapped(
             command,
             fetch,
             margin=args.refresh_margin,
             export_token_env=args.export_token_env,
             on_child=forward_signals,
         )
-    )
+    except UntrustedIssuerError as exc:
+        print(json.dumps(refusal_event(exc)), file=sys.stderr)
+        code = 2
+    sys.exit(code)
 
 
 if __name__ == "__main__":

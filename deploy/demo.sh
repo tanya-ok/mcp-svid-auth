@@ -10,6 +10,7 @@ fi
 
 A="http://notes-a:8101/mcp"
 B="http://notes-b:8102/mcp"
+AUTHZ="http://authz:8100"
 server() { docker compose exec -T spire-server /opt/spire/bin/spire-server "$@"; }
 
 mkdir -p .data
@@ -29,7 +30,11 @@ echo "== authz and MCP servers"
 docker compose up -d --build authz notes-a notes-b
 sleep 3
 
-run() { docker compose run --rm --no-deps "$@" || true; }
+run() {
+  local agent="$1"
+  shift
+  docker compose run --rm --no-deps "$agent" --trusted-issuer "$AUTHZ" "$@" || true
+}
 
 echo
 echo "== 1. research agent on notes-a: read and write allowed"
