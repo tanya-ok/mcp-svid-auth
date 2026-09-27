@@ -53,6 +53,19 @@ def test_resume_refuses_corrupt_tail(tmp_path: Path) -> None:
         _write(AuditLog(path=path), 1)
 
 
+@pytest.mark.parametrize(
+    "tail", ["{not json\n", '{"record_id":"x"}\n{"record_id":', '{"record_id":"x"}']
+)
+def test_corrupt_tail_fails_every_write(tmp_path: Path, tail: str) -> None:
+    path = tmp_path / "a.jsonl"
+    path.write_text(tail, encoding="utf-8")
+    log = AuditLog(path=path)
+    for _ in range(2):
+        with pytest.raises(AuditChainError):
+            _write(log, 1)
+    assert path.read_text(encoding="utf-8") == tail
+
+
 def _tampered(tmp_path: Path, change: Any) -> list[str]:
     path = tmp_path / "a.jsonl"
     _write(AuditLog(path=path), 4)
