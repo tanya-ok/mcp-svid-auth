@@ -4,15 +4,15 @@
 
 ## Workloads
 
-| SPIFFE ID | Unix UID | In policy |
+| SPIFFE ID | Container label `org.example.svid.workload` | In policy |
 |---|---|---|
-| `spiffe://example.org/authz` | 1010 | n/a |
-| `spiffe://example.org/mcp/notes-a` | 1011 | n/a |
-| `spiffe://example.org/mcp/notes-b` | 1012 | n/a |
-| `spiffe://example.org/agent/research` | 1001 | notes-a: `notes:read notes:write`; notes-b: `notes:read` |
-| `spiffe://example.org/agent/intruder` | 1002 | No |
+| `spiffe://example.org/authz` | `authz` | n/a |
+| `spiffe://example.org/mcp/notes-a` | `notes-a` | n/a |
+| `spiffe://example.org/mcp/notes-b` | `notes-b` | n/a |
+| `spiffe://example.org/agent/research` | `agent-research` | notes-a: `notes:read notes:write`; notes-b: `notes:read` |
+| `spiffe://example.org/agent/intruder` | `agent-intruder` | No |
 
-Registration entries use `unix:uid:<uid>` selectors and a JWT-SVID TTL of 300s.
+Registration entries use `docker:label:org.example.svid.workload:<name>` selectors and a JWT-SVID TTL of 300s. The SPIRE agent reads labels through the Docker socket; see [Docker socket exposure](security.md#docker-socket-exposure). Workloads still run as distinct non-root UIDs, but the UID no longer decides the identity.
 
 ## Scenarios
 
@@ -31,7 +31,7 @@ mcp-svid-agent --resource http://notes-a:8101/mcp --scope "notes:read notes:writ
   --spiffe-id spiffe://example.org/agent/research
 # 2
 mcp-svid-agent --resource http://notes-b:8102/mcp --scope notes:read
-# 3 (as the intruder UID)
+# 3 (in the agent-intruder container)
 mcp-svid-agent --resource http://notes-a:8101/mcp --scope notes:read
 # 4
 mcp-svid-agent --resource http://notes-a:8101/mcp --scope "notes:read notes:write" \
