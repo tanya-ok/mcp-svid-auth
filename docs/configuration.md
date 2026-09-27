@@ -46,6 +46,12 @@ Notes MCP server (POC)
 | `--host` | `127.0.0.1` | Listen address |
 | `--port` | `8101` | Listen port |
 | `--audit-log` | none | Audit log file (JSON lines, appended), default stderr |
+| `--upstream-resource` | none | Upstream MCP server for notes.search_upstream, called with this server's own token |
+| `--upstream-scope` | `notes:read` | Scope requested for the upstream token |
+| `--trusted-issuer` | none | Authorization server allowed for the upstream token; required with an upstream |
+| `--socket` | none | Workload API socket for the upstream SVID, default SPIFFE_ENDPOINT_SOCKET |
+| `--allow-http` | off | Dev only: accept plain http URLs for discovery, token requests and tool calls |
+| `--allow-private-network` | off | Dev only: accept hosts that resolve to private, loopback or link-local addresses |
 
 Fixed values:
 

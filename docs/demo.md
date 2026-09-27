@@ -72,4 +72,5 @@ The same behaviour is covered without SPIRE in `tests/`, using `LocalSvidIssuer`
 | `test_audit_chain.py` | Audit hash chain: links, resume across writers, edited, deleted, reordered and truncated lines detected, verify command |
 | `test_policy_reload.py` | Grant removal denies new tokens after reload, invalid or missing file fails closed, polling watcher, SIGHUP |
 | `test_token_expiry.py` | Tool calls bounded by token `exp`: 401 when the call outlives the token, `notes.write` refuses after expiry without storing |
+| `test_no_passthrough.py` | Invariant 3: every request leaving notes-a during `notes.search_upstream` is recorded and none carries the caller token; notes-b sees notes-a's own identity; a forwarded caller token gets 401 |
 | `test_no_identifiers.py` | Optional anonymization denylist |

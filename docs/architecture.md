@@ -28,13 +28,17 @@ flowchart LR
 | Module | Command | Role |
 |---|---|---|
 | `authz` | `mcp-svid-authz` | Token endpoint. JWT-SVID client assertion in, audience-bound JWT access token out. Publishes JWKS and RFC 8414 metadata. |
-| `mcp_server` | `mcp-svid-notes` | MCP server over Streamable HTTP. Tools `notes.search` (`notes:read`) and `notes.write` (`notes:write`). |
+| `mcp_server` | `mcp-svid-notes` | MCP server over Streamable HTTP. Tools `notes.search` (`notes:read`) and `notes.write` (`notes:write`); with `--upstream-resource` also `notes.search_upstream` (`notes:read`), which calls another MCP server with the server's own token. |
 | `agent_client` | `mcp-svid-agent` | Discovers the authorization server, refuses it unless it is on the `--trusted-issuer` allowlist, fetches its SVID, gets a token, calls tools. Refuses non-https and non-public URLs unless relaxed for dev. `--steal-token` replays a token against another server. |
 | `stdio_wrapper` | `mcp-svid-stdio` | Starts a local stdio MCP server with a refreshed token file. See [stdio wrapper](stdio-wrapper.md). |
 | `policy` | none | Allowlist of SPIFFE ID, resource and scopes. |
 | `audit` | `mcp-svid-audit-verify` | One hash-chained JSON line per decision, to a file or stderr, and the chain verifier. |
 | `spiffe_keys` | none | JWT-SVID source and key resolver: Workload API, or a static JWKS for tests. |
 | `deploy/` | `make demo` | SPIRE server and agent 1.15.3, registration entries, the three services, four scenarios. |
+
+## Upstream calls without token passthrough
+
+With `--upstream-resource`, a notes server gets the tool `notes.search_upstream`. It runs the same client flow as the agent (discovery, `--trusted-issuer`, URL checks, JWT-SVID client assertion) under the server's own SPIFFE ID, and caches that token until 30s before `exp`. The caller's token never leaves the server. The upstream audit line therefore names the relay (`spiffe://example.org/mcp/notes-a`), not the original caller; carrying the caller along needs a delegation chain (token exchange with an `act` claim), which is not implemented.
 
 ## Endpoints
 
