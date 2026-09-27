@@ -125,7 +125,7 @@ Denials before the signature check prefix the SPIFFE ID with `unverified:`.
 |---|---|---|
 | Static key leak | No static keys. SVID and access token both live 5 min. | A stolen access token works until expiry. |
 | Token replay to another server | `aud` bound to one resource. Each server checks `aud` equals its own URI. | None within one issuer. |
-| JWT-SVID replay to authz | SVID `aud` must be the issuer only. 5 min TTL. Each `(sub, jti)` is accepted once. | Seen-set is in memory and per process. A stolen, unused SVID still works once. |
+| JWT-SVID replay to authz | SVID `aud` must be the issuer only. 5 min TTL. Default `--svid-replay reject`: `jti` required, each `(sub, jti)` accepted once. | The compose demo runs `allow-reuse-within-lifetime` because the SPIRE 1.15.3 agent re-serves cached SVIDs; there a stolen SVID mints tokens until it expires. See [docs/security.md](docs/security.md#jwt-svid-replay-tracking). |
 | SVID harvesting by a malicious resource | The agent mints SVIDs only for issuers on its `--trusted-issuer` allowlist. An issuer named in Protected Resource Metadata that is not on the list is refused, and logged as `issuer_refused`, before any request to it and before any SVID fetch. Exact match after scheme, host and default port normalization; no prefix match. | The allowlist is per process, not per resource. |
 | Workload impersonation | SPIRE docker attestor. Identity is bound to a container label, not a UID. | Anyone who can start a container with a registered label on that host gets that identity. |
 | Over-broad access | Allowlist per SPIFFE ID, resource and scope. Per-tool scope check. | Policy is a local file. No versioning or review flow. |
@@ -142,13 +142,15 @@ Denials before the signature check prefix the SPIFFE ID with `unverified:`.
 - No X.509-SVID or WIT-SVID client authentication. JWT-SVID only.
 - The compose stack uses the docker attestor with label selectors, a shared PID namespace and the Docker socket mounted into the SPIRE agent. It fits a single-host demo only. See [docs/security.md](docs/security.md#docker-socket-exposure).
 - No `jti` replay tracking for access tokens.
+- The compose demo accepts JWT-SVID reuse within the SVID lifetime (`--svid-replay=allow-reuse-within-lifetime`). The SPIRE 1.15.3 agent returns the same cached SVID, with the same `jti`, on every fetch.
 
 ## Status
 
 | Item | State |
 |---|---|
 | Offline tests | Pass (`make check`) |
-| `make demo` against SPIRE 1.15.3 | Pass on 2026-09-27 with the docker workload attestor (label selectors), Docker Desktop 29.6.1 on macOS, cgroup v2. All four scenarios behave as in the table above. A container with an unregistered label, or none, gets `PERMISSION_DENIED` from the Workload API. |
+| `make demo` against SPIRE 1.15.3 | Pass on 2026-09-27 with the docker workload attestor (label selectors), `--trusted-issuer`, and `--svid-replay=allow-reuse-within-lifetime`, Docker Desktop 29.6.1 on macOS, cgroup v2. All four scenarios behave as in the table above. A container with an unregistered label, or none, gets `PERMISSION_DENIED` from the Workload API. |
+| `--svid-replay reject` against SPIRE 1.15.3 | Not usable yet. The agent re-serves a cached SVID with the same `jti`, so the second token request from a workload gets `client assertion replayed` (tested 2026-09-27). Default stays `reject`; the demo opts out explicitly. |
 | stdio wrapper | Minimal. Children must re-read `MCP_ACCESS_TOKEN_FILE` per upstream call. |
 
 ## License
