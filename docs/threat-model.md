@@ -77,7 +77,7 @@ flowchart TB
 | Agent | Tool selection | Task text and tool results, both untrusted input for security decisions |
 | MCP client | Credential lifecycle for one resource | PRM `resource`, AS `issuer`, token expiry |
 | SPIRE agent | Identity issuance | Attestation selectors (Docker container label here) |
-| Authorization server | Token issuance | SPIRE JWT bundle, grant policy loaded at start |
+| Authorization server | Token issuance | SPIRE JWT bundle, grant policy reloaded on SIGHUP or file change |
 | MCP server | Tool execution | Cached authz JWKS (60s, one refetch on unknown `kid` at most every 10s), own canonical URI, tool scope map |
 
 ## 3. Unsafe control actions
@@ -127,7 +127,7 @@ Scenarios of type A explain why a controller provides a UCA (flawed process mode
 | LS-5 | A, adversarial | A local stdio server is launched with an API key in its environment. Any process under the same UID reads it from the process environment; grandchildren inherit it; it never expires. | UCA-11.2, UCA-11.3 | L-1, L-2 |
 | LS-6 | A, adversarial | A client presents a well-known client's CIMD URL as `client_id` and a `localhost` redirect. The AS shows the legitimate client name. The document proves domain control, not which process holds the redirect. | UCA-7.5 | L-1, L-2 |
 | LS-7 | A, adversarial | A tool result contains instructions. The agent follows them and calls `notes.write` with attacker content. Every check passes: the workload is authorized, only its intent is wrong. | UCA-5.1, UCA-6.1 | L-2 |
-| LS-8 | A | The operator removes a grant from `policy.yaml`. authz loads policy only at start, so tokens keep being issued until restart, and issued tokens stay valid for up to 5 minutes after that. | UCA-2.4, UCA-8.6 | L-1, L-2 |
+| LS-8 | A | The operator removes a grant from `policy.yaml`. authz reloads the file on SIGHUP or within `--policy-poll-seconds` (5s), and denies new token requests from then on. Tokens issued before the reload stay valid for up to 5 minutes, because there is no revocation list or introspection. | UCA-2.4, UCA-8.6 | L-1, L-2 |
 | LS-9 | A, adversarial | A JWT-SVID is stolen within its 5-minute lifetime and replayed at the token endpoint. In `--svid-replay reject` mode each `(sub, jti)` is accepted once, so only an unused SVID works, once. In `allow-reuse-within-lifetime` mode, which the compose demo needs because the SPIRE 1.15.3 agent re-serves cached SVIDs, each replay mints a fresh token until the SVID expires. | UCA-8.5 | L-1, L-2 |
 | LS-10 | B | authz restarts with a new signing key. MCP servers cache the old JWKS for up to 60 seconds. An unknown `kid` triggers one refetch, at most every 10 seconds, so tokens with the new key are refused for at most 10 seconds. | UCA-10.1 | L-4 |
 | LS-11 | A | The Workload API or the token endpoint is unreachable during refresh. The stdio wrapper cannot renew, so it deletes the token and stops the child. | UCA-7.1, UCA-11.5 | L-4 (accepted) |
@@ -145,7 +145,7 @@ Links go to the source on `main`. "Not mitigated" names the matching non-goal or
 | UCA-1.4, 1.5, 2.5 | Not mitigated | Operator process. Entries and policy have no review or expiry flow | Known gap "Over-broad access: policy is a local file" |
 | UCA-2.2 | Partly | Per SPIFFE ID, per resource, per scope allowlist. Breadth is the operator's choice | [`policy.py`](https://github.com/tanya-ok/mcp-svid-auth/blob/main/src/mcp_svid_auth/policy.py), [`test_resource_not_allowed_for_client`](https://github.com/tanya-ok/mcp-svid-auth/blob/main/tests/test_authz.py) |
 | UCA-2.3 | Mitigated | Trust domain pinned in policy; SPIFFE ID must be allowlisted | [`test_foreign_trust_domain`, `test_spiffe_id_not_allowlisted`](https://github.com/tanya-ok/mcp-svid-auth/blob/main/tests/test_authz.py), demo scenario 3 |
-| UCA-2.4, 8.6 | Not mitigated | Policy loaded once at start; no token revocation or introspection | Non-goal "Not production software"; bounded by the 5-minute token TTL |
+| UCA-2.4, 8.6 | Partly | Policy reloaded on SIGHUP and on content change (polled every 5s). New token requests are denied from the reload on; an invalid file denies all. Already issued tokens stay valid until `exp` (at most 300s); no revocation list or introspection | [`test_removed_grant_denies_new_tokens`, `test_invalid_file_fails_closed_until_fixed`, `test_sighup_forces_reload`](https://github.com/tanya-ok/mcp-svid-auth/blob/main/tests/test_policy_reload.py) |
 | UCA-3.3 | Mitigated | authz requires SVID `aud` to be exactly its issuer | [`test_wrong_svid_audience`, `test_svid_with_extra_audience_is_rejected`](https://github.com/tanya-ok/mcp-svid-auth/blob/main/tests/test_authz.py) |
 | UCA-3.4, 7.4, 7.6 | Mitigated | Required `--trusted-issuer` allowlist on the agent and the stdio wrapper. An issuer not on the list is refused before any request to it and before any SVID fetch; exact match after normalization. Client also checks PRM `resource` and AS metadata `issuer`. Resource, issuer, `token_endpoint` and tool call URLs must be `https` and resolve only to public addresses unless `--allow-http` or `--allow-private-network` is set | [`test_untrusted_issuer_refused_before_svid`, `test_path_issuer_trailing_slash_refused`, `test_agent_cli_requires_trusted_issuer`, `test_stdio_cli_requires_trusted_issuer`](https://github.com/tanya-ok/mcp-svid-auth/blob/main/tests/test_issuer_allowlist.py), [`test_private_resource_refused_before_any_request`, `test_unsafe_token_endpoint_refused_before_svid`, `test_call_tool_refuses_unsafe_url_before_sending_token`](https://github.com/tanya-ok/mcp-svid-auth/blob/main/tests/test_url_policy.py) |
 | UCA-4.2 | Mitigated | Key selected by `kid` from the policy trust domain bundle only | [`test_svid_signed_by_unknown_key`, `test_svid_signed_by_wrong_key_with_known_kid`](https://github.com/tanya-ok/mcp-svid-auth/blob/main/tests/test_authz.py) |
@@ -177,7 +177,7 @@ Links go to the source on `main`. "Not mitigated" names the matching non-goal or
 |---|---|---|---|
 | UCA-1.2, 3.2 (partly) | H-2 | LS-1 | Label selectors; Docker socket in the SPIRE agent |
 | UCA-5.1, 5.2, 6.1 | H-7 | LS-7 | No user delegation |
-| UCA-2.4, 8.6 | H-3 | LS-8 | Not production software (no revocation, no policy reload) |
+| UCA-2.4, 8.6 (partly) | H-3 | LS-8 | No revocation of issued tokens; time to denial up to the 300s token TTL |
 | UCA-8.5 (partly) | H-2 | LS-9 | JWT-SVID reuse allowed in the demo (SPIRE 1.15.3 agent SVID cache) |
 | UCA-10.5 (no test) | H-2 | LS-4 | No token exchange or `act` chain |
 | UCA-10.8 | H-3 | none listed | Not production software |

@@ -7,9 +7,11 @@ RFC 8707. Access tokens follow the RFC 9068 JWT profile.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import heapq
 import json
 import re
+import signal
 import threading
 import time
 import uuid
@@ -50,6 +52,7 @@ _MAX_JTI_LENGTH = 256
 # RFC 6749 section 3.3 scope-token characters.
 _SCOPE_TOKEN = re.compile(r"[\x21\x23-\x5B\x5D-\x7E]+")
 _NO_STORE = {"Cache-Control": "no-store", "Pragma": "no-cache"}
+DEFAULT_POLICY_POLL_SECONDS = 5.0
 
 
 @dataclass
@@ -109,10 +112,57 @@ class AuthzServer:
     kid: str = field(default_factory=lambda: uuid.uuid4().hex[:16])
     replay_cache: ReplayCache = field(default_factory=ReplayCache)
     svid_replay: str = DEFAULT_SVID_REPLAY
+    policy_path: Path | None = None
+    _policy_digest: str | None = None
+    _reload_lock: threading.Lock = field(default_factory=threading.Lock)
 
     def __post_init__(self) -> None:
         if self.svid_replay not in SVID_REPLAY_MODES:
             raise ValueError(f"svid_replay must be one of {SVID_REPLAY_MODES}")
+        if self.policy_path is not None:
+            self._policy_digest = _digest(self.policy_path)
+
+    def reload_policy(self, *, force: bool = False) -> bool:
+        """Reload `policy_path` if its content changed (or always with `force`).
+
+        Applies to token requests from then on; tokens already issued stay valid until `exp`.
+        An unreadable or invalid file fails closed: every token request is denied until a
+        valid file is loaded. Returns True when a reload was attempted.
+        """
+        if self.policy_path is None:
+            return False
+        with self._reload_lock:
+            try:
+                digest = _digest(self.policy_path)
+            except OSError as exc:
+                digest = f"unreadable:{type(exc).__name__}"
+            if not force and digest == self._policy_digest:
+                return False
+            self._policy_digest = digest
+            try:
+                policy = Policy.load(self.policy_path)
+            except Exception as exc:
+                self.policy = Policy(trust_domain=self.policy.trust_domain, grants={})
+                self.audit.write(
+                    spiffe_id=None,
+                    tool=None,
+                    decision="policy_reload",
+                    reason=f"failed: {type(exc).__name__}; denying all token requests",
+                )
+                return True
+            self.policy = policy
+            self.audit.write(
+                spiffe_id=None,
+                tool=None,
+                decision="policy_reload",
+                reason=f"loaded sha256={digest[:16]} clients={len(policy.grants)}",
+            )
+            return True
+
+    def watch_policy(self, interval: float, stop: threading.Event) -> None:
+        """Poll `policy_path` every `interval` seconds until `stop` is set."""
+        while not stop.wait(interval):
+            self.reload_policy()
 
     def jwks(self) -> dict[str, Any]:
         jwk: dict[str, Any] = json.loads(ECAlgorithm.to_jwk(self.signing_key.public_key()))
@@ -128,8 +178,9 @@ class AuthzServer:
             "token_endpoint_auth_methods_supported": ["spiffe_jwt"],
         }
 
-    def verify_svid(self, assertion: str) -> str:
+    def verify_svid(self, assertion: str, policy: Policy | None = None) -> str:
         """Validate a JWT-SVID client assertion and return its SPIFFE ID."""
+        policy = policy or self.policy
         try:
             header = jwt.get_unverified_header(assertion)
             unverified = jwt.decode(assertion, options={"verify_signature": False})
@@ -143,7 +194,7 @@ class AuthzServer:
             raise AuthError("invalid_client", "assertion has no sub", 401)
         try:
             trust_domain = spiffe_trust_domain(sub)
-            if trust_domain != self.policy.trust_domain:
+            if trust_domain != policy.trust_domain:
                 raise AuthError("invalid_client", "foreign trust domain")
             key = self.resolver.resolve(trust_domain, header.get("kid"))
         except AuthError as exc:
@@ -209,11 +260,12 @@ class AuthzServer:
         resource = form.get("resource")
         if not resource:
             raise AuthError("invalid_target", "resource parameter is required")
-        spiffe_id = self.verify_svid(assertion)
+        policy = self.policy  # one snapshot per request, even if a reload swaps it
+        spiffe_id = self.verify_svid(assertion, policy)
         client_id = form.get("client_id")
         if client_id is not None and client_id != spiffe_id:
             raise AuthError("invalid_client", "client_id does not match SVID", 401)
-        scopes = self.policy.grant(spiffe_id, resource, parse_scope(form.get("scope")))
+        scopes = policy.grant(spiffe_id, resource, parse_scope(form.get("scope")))
         now = int(time.time())
         claims = {
             "iss": self.issuer,
@@ -287,6 +339,19 @@ class AuthzServer:
         )
 
 
+def _digest(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def install_policy_reload(server: AuthzServer, poll_seconds: float) -> threading.Event:
+    """Reload on SIGHUP and, if `poll_seconds` > 0, when the file content changes."""
+    signal.signal(signal.SIGHUP, lambda _s, _f: server.reload_policy(force=True))
+    stop = threading.Event()
+    if poll_seconds > 0:
+        threading.Thread(target=server.watch_policy, args=(poll_seconds, stop), daemon=True).start()
+    return stop
+
+
 def parse_scope(raw: str | None) -> set[str]:
     """Parse a scope parameter. Explicit scope is required; tokens separated by single spaces."""
     if not raw:
@@ -306,7 +371,18 @@ def build_parser() -> argparse.ArgumentParser:
         required=True,
         help="public base URL, used as iss and as the required SVID aud; trailing slash removed",
     )
-    parser.add_argument("--policy", type=Path, required=True, help="path to the policy YAML file")
+    parser.add_argument(
+        "--policy",
+        type=Path,
+        required=True,
+        help="path to the policy YAML file; reloaded on SIGHUP and when its content changes",
+    )
+    parser.add_argument(
+        "--policy-poll-seconds",
+        type=float,
+        default=DEFAULT_POLICY_POLL_SECONDS,
+        help="how often to check the policy file for changes; 0 disables polling (SIGHUP only)",
+    )
     parser.add_argument("--host", default="127.0.0.1", help="listen address")
     parser.add_argument("--port", type=int, default=8100, help="listen port")
     parser.add_argument(
@@ -356,7 +432,9 @@ def main(argv: list[str] | None = None) -> None:
         audit=AuditLog(path=args.audit_log, component="authz"),
         max_svid_lifetime=args.max_svid_lifetime,
         svid_replay=args.svid_replay,
+        policy_path=args.policy,
     )
+    install_policy_reload(server, args.policy_poll_seconds)
     uvicorn.run(server.app(), host=args.host, port=args.port)
 
 

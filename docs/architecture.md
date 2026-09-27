@@ -127,7 +127,7 @@ Every allow and deny decision in authz and the MCP servers is one JSON line:
 | `component` | `authz` or `mcp_server:<name>` |
 | `spiffe_id` | caller, prefixed with `unverified:` when the decision was made before the signature check, `null` when unknown |
 | `tool` | tool name for `tools/call`, else `null` |
-| `decision` | `allow` or `deny` |
+| `decision` | `allow`, `deny`, or `policy_reload` (authz only) |
 | `reason` | OAuth error code and fixed description, plus audit-only detail |
 
 Without `--audit-log` the lines go to stderr.

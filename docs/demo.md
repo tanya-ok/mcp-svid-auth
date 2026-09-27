@@ -70,4 +70,5 @@ The same behaviour is covered without SPIRE in `tests/`, using `LocalSvidIssuer`
 | `test_issuer_allowlist.py` | Trusted issuer allowlist: unknown and lookalike issuers refused before any SVID fetch, refusal event |
 | `test_url_policy.py` | Discovery URL checks: https only, private, loopback and link-local addresses refused for the resource, issuer, token endpoint and tool call, dev flags |
 | `test_audit_chain.py` | Audit hash chain: links, resume across writers, edited, deleted, reordered and truncated lines detected, verify command |
+| `test_policy_reload.py` | Grant removal denies new tokens after reload, invalid or missing file fails closed, polling watcher, SIGHUP |
 | `test_no_identifiers.py` | Optional anonymization denylist |

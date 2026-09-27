@@ -14,7 +14,8 @@ JWT-SVID to access token bridge (POC)
 | Flag | Default | Meaning |
 |---|---|---|
 | `--issuer` | required | Public base URL, used as iss and as the required SVID aud; trailing slash removed |
-| `--policy` | required | Path to the policy YAML file |
+| `--policy` | required | Path to the policy YAML file; reloaded on SIGHUP and when its content changes |
+| `--policy-poll-seconds` | `5.0` | How often to check the policy file for changes; 0 disables polling (SIGHUP only) |
 | `--host` | `127.0.0.1` | Listen address |
 | `--port` | `8100` | Listen port |
 | `--static-jwks` | none | Test mode: JWT-SVID bundle as a JWKS file instead of the Workload API |

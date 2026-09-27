@@ -15,7 +15,7 @@ The table below is the short view. [Threat model (STPA-Sec)](threat-model.md) de
 | SVID harvesting by a malicious resource | The agent mints SVIDs only for issuers on its `--trusted-issuer` allowlist. An issuer named in Protected Resource Metadata that is not on the list is refused, and logged as `issuer_refused`, before any request to it and before any SVID fetch. Exact match after scheme, host and default port normalization; no prefix match. | The allowlist is per process, not per resource. |
 | Discovery SSRF | Every URL the agent fetches or sends a credential to (resource, issuer, `token_endpoint`, tool call) must be `https` and resolve only to public addresses. Refused URLs are logged as `url_refused` and get no request. | `--allow-http` and `--allow-private-network` turn the checks off for dev; the compose demo needs both. The check resolves the host itself and the HTTP client resolves it again, so DNS rebinding between the two lookups is not covered. |
 | Workload impersonation | SPIRE docker attestor. Identity is bound to a container label, not a UID. | Anyone who can start a container with a registered label on that host gets that identity. |
-| Over-broad access | Allowlist per SPIFFE ID, resource and scope. Per-tool scope check. | Policy is a local file. No versioning or review flow. |
+| Over-broad access | Allowlist per SPIFFE ID, resource and scope. Per-tool scope check. Policy reloaded on SIGHUP or file change. | Policy is a local file. No versioning or review flow. Issued tokens outlive a revoked grant by up to 300s. |
 | Confused deputy | Server never forwards the incoming token. | No delegation chain for downstream calls. |
 | Algorithm confusion | SVIDs: asymmetric algorithms only, `alg=none` rejected. Access tokens: ES256 only, `typ` `at+jwt`. Key selected by `kid` from a trusted key set. | None known. |
 | Stale token in a stdio child | Token passed by 0600 file, refreshed. Wrapper deletes it and stops the child on expiry. | `--export-token-env` values are visible in the process environment and never refreshed. |
@@ -72,6 +72,23 @@ SPIRE 1.15.3, tested 2026-09-27:
 - So under `reject`, the first token request from a workload succeeds and every later one within the cached SVID lifetime gets `client assertion replayed`. The demo therefore sets `--svid-replay=allow-reuse-within-lifetime` in `deploy/docker-compose.yml` and keeps `-jwtSVIDIncludeJTI` in `deploy/register.sh`.
 
 Residual risk in `allow-reuse-within-lifetime`: a JWT-SVID stolen from the agent, the workload or the wire mints access tokens at authz until it expires, up to `--max-svid-lifetime` (300s). Each allow audit line carries `svid_jti=<jti>`, so reuse of one SVID is visible in the audit trail, but it is not blocked. Switch back to `reject` once the SVID source yields a fresh `jti` per fetch.
+
+### Policy reload and grant revocation
+
+| Trigger | Effect |
+|---|---|
+| SIGHUP | Reload now, even if the content is unchanged |
+| File content changes (SHA-256), checked every `--policy-poll-seconds` (default 5s, 0 disables) | Reload |
+| Reloaded file is unreadable or invalid | Fail closed: every token request gets `unauthorized_client` until a valid file loads |
+
+Each reload writes an audit line with `decision` `policy_reload`, the first 16 hex characters of the file hash and the client count, or the exception type on failure.
+
+Time to denial after a grant is removed:
+
+| Credential | Denied after |
+|---|---|
+| New token request | The next reload: immediately on SIGHUP, at most one poll interval (5s) otherwise |
+| Access token issued before the reload | Its `exp`, at most 300s (`DEFAULT_TOKEN_TTL`). Servers validate tokens locally; there is no revocation list or introspection |
 
 ### MCP server (`mcp_server.py`)
 
