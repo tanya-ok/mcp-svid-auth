@@ -141,7 +141,8 @@ def generate() -> str:
         mcp_server.build_parser(),
         [
             ("Tools (scope)", tools),
-            ("JWKS cache", f"{mcp_server._JWKS_CACHE_SECONDS}s"),
+            ("JWKS cache", f"{mcp_server.JWKS_CACHE_SECONDS}s"),
+            ("Unknown `kid` refetch", f"at most every {mcp_server.JWKS_MIN_REFETCH_SECONDS}s"),
             ("Request body limit", f"{mcp_server.MAX_BODY_BYTES} bytes"),
             ("Accepted token `typ`", f"`{mcp_server._ACCESS_TOKEN_TYP}`"),
             (

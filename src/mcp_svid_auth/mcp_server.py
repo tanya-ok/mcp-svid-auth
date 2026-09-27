@@ -12,13 +12,14 @@ The server:
 from __future__ import annotations
 
 import argparse
+import asyncio
 import contextlib
 import json
 import time
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 from urllib.parse import urlsplit
 
 import httpx2
@@ -45,27 +46,80 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from mcp_svid_auth.audit import AuditLog
 
-_JWKS_CACHE_SECONDS = 60
+JWKS_CACHE_SECONDS = 60
+JWKS_MIN_REFETCH_SECONDS = 10
 _ACCESS_TOKEN_ALGS = ["ES256"]
 _ACCESS_TOKEN_TYP = "at+jwt"  # noqa: S105 - media type, not a secret
 MAX_BODY_BYTES = 1024 * 1024
 
 
+class JwksUnavailableError(Exception):
+    """The authorization server JWKS could not be fetched."""
+
+
+class JwksSource(Protocol):
+    """Async key set. `refresh=True` asks for a fresh copy (unknown `kid`); it may be refused."""
+
+    async def get(self, *, refresh: bool = False) -> dict[str, Any]: ...
+
+
+@dataclass
+class StaticJwks:
+    """Wraps a local key set callable, for tests and in-process use."""
+
+    source: Callable[[], dict[str, Any]]
+
+    async def get(self, *, refresh: bool = False) -> dict[str, Any]:
+        return self.source()
+
+
 @dataclass
 class JwksFetcher:
-    """Fetches and caches the authorization server JWKS."""
+    """Fetches and caches the authorization server JWKS without blocking the event loop.
+
+    The URI is fixed at startup and never taken from a token. The cache expires after
+    `JWKS_CACHE_SECONDS`. A refresh on unknown `kid` happens at most once per
+    `JWKS_MIN_REFETCH_SECONDS`, so tokens with random `kid` values cannot cause a fetch storm.
+    """
 
     jwks_uri: str
+    transport: httpx2.AsyncBaseTransport | None = None
+    clock: Callable[[], float] = time.monotonic
     _cached: dict[str, Any] | None = None
-    _at: float = 0.0
+    _fetched_at: float = 0.0
+    _attempted_at: float | None = None
+    _lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
-    def __call__(self) -> dict[str, Any]:
-        if self._cached is None or time.monotonic() - self._at > _JWKS_CACHE_SECONDS:
-            response = httpx2.get(self.jwks_uri, timeout=5)
-            response.raise_for_status()
-            self._cached = response.json()
-            self._at = time.monotonic()
-        return self._cached
+    async def get(self, *, refresh: bool = False) -> dict[str, Any]:
+        async with self._lock:
+            if self._cached is None or self.clock() - self._fetched_at > JWKS_CACHE_SECONDS:
+                return await self._fetch()
+            if refresh and self._may_refetch():
+                return await self._fetch()
+            return self._cached
+
+    def _may_refetch(self) -> bool:
+        return (
+            self._attempted_at is None
+            or self.clock() - self._attempted_at >= JWKS_MIN_REFETCH_SECONDS
+        )
+
+    async def _fetch(self) -> dict[str, Any]:
+        self._attempted_at = self.clock()
+        try:
+            async with httpx2.AsyncClient(
+                transport=self.transport, timeout=5, follow_redirects=False
+            ) as client:
+                response = await client.get(self.jwks_uri)
+                response.raise_for_status()
+                jwks = response.json()
+        except (httpx2.HTTPError, ValueError) as exc:
+            raise JwksUnavailableError(type(exc).__name__) from exc
+        if not isinstance(jwks, dict) or not isinstance(jwks.get("keys"), list):
+            raise JwksUnavailableError("not a JWKS")
+        self._cached = jwks
+        self._fetched_at = self._attempted_at
+        return jwks
 
 
 @dataclass
@@ -74,7 +128,7 @@ class AudienceBoundVerifier:
 
     issuer: str
     resource: str
-    jwks: Callable[[], dict[str, Any]]
+    jwks: JwksSource
     audit: AuditLog
 
     async def verify_token(self, token: str) -> AccessToken | None:
@@ -83,8 +137,9 @@ class AudienceBoundVerifier:
             if header.get("typ") != _ACCESS_TOKEN_TYP:
                 raise jwt.InvalidTokenError(f"typ must be {_ACCESS_TOKEN_TYP}")
             kid = header.get("kid")
-            keys = jwt.PyJWKSet.from_dict(self.jwks()).keys
-            key = next((k.key for k in keys if k.key_id == kid), None)
+            key = _find_key(await self.jwks.get(), kid)
+            if key is None:
+                key = _find_key(await self.jwks.get(refresh=True), kid)
             if key is None:
                 raise jwt.InvalidTokenError("unknown signing key")
             claims = jwt.decode(
@@ -103,6 +158,14 @@ class AudienceBoundVerifier:
                 reason=f"invalid_token: {type(exc).__name__}: {exc}",
             )
             return None
+        except JwksUnavailableError as exc:
+            self.audit.write(
+                spiffe_id=_unverified_sub(token),
+                tool=None,
+                decision="deny",
+                reason=f"jwks_unavailable: {exc}",
+            )
+            return None
         return AccessToken(
             token=token,
             client_id=str(claims.get("client_id", claims["sub"])),
@@ -112,6 +175,11 @@ class AudienceBoundVerifier:
             subject=str(claims["sub"]),
             claims={"iss": claims["iss"]},
         )
+
+
+def _find_key(jwks: dict[str, Any], kid: object) -> Any:
+    keys = jwt.PyJWKSet.from_dict(jwks).keys
+    return next((k.key for k in keys if k.key_id == kid), None)
 
 
 def _unverified_sub(token: str) -> str | None:
@@ -328,7 +396,7 @@ def create_app(  # noqa: PLR0913
     name: str,
     resource: str,
     issuer: str,
-    jwks: Callable[[], dict[str, Any]],
+    jwks: JwksSource | Callable[[], dict[str, Any]],
     audit: AuditLog,
     store: NotesStore | None = None,
     allowed_hosts: list[str] | None = None,
@@ -347,7 +415,8 @@ def create_app(  # noqa: PLR0913
     )
     resource_url = AnyHttpUrl(resource)
     metadata_url = str(build_resource_metadata_url(resource_url))
-    verifier = AudienceBoundVerifier(issuer=issuer, resource=resource, jwks=jwks, audit=audit)
+    source = StaticJwks(jwks) if callable(jwks) else jwks
+    verifier = AudienceBoundVerifier(issuer=issuer, resource=resource, jwks=source, audit=audit)
     guarded = ToolScopeGuard(StreamableHTTPASGIApp(manager), tool_scopes, metadata_url, audit)
     endpoint = AuditedRequireAuth(guarded, metadata_url, audit)
     path = urlsplit(resource).path or "/"

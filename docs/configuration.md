@@ -51,6 +51,7 @@ Fixed values:
 |---|---|
 | Tools (scope) | `notes.search` (`notes:read`), `notes.write` (`notes:write`) |
 | JWKS cache | 60s |
+| Unknown `kid` refetch | at most every 10s |
 | Request body limit | 1048576 bytes |
 | Accepted token `typ` | `at+jwt` |
 | Accepted token algorithms | `ES256` |
