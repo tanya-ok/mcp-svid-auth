@@ -125,7 +125,7 @@ Denials before the signature check prefix the SPIFFE ID with `unverified:`.
 |---|---|---|
 | Static key leak | No static keys. SVID and access token both live 5 min. | A stolen access token works until expiry. |
 | Token replay to another server | `aud` bound to one resource. Each server checks `aud` equals its own URI. | None within one issuer. |
-| JWT-SVID replay to authz | SVID `aud` must be the issuer only. 5 min TTL. | No `jti` tracking. A stolen SVID can mint tokens for its whole lifetime. |
+| JWT-SVID replay to authz | SVID `aud` must be the issuer only. 5 min TTL. Each `(sub, jti)` is accepted once. | Seen-set is in memory and per process. A stolen, unused SVID still works once. |
 | Workload impersonation | SPIRE attestation. | Unix attestor is UID based. Any process under a registered UID gets that identity. |
 | Over-broad access | Allowlist per SPIFFE ID, resource and scope. Per-tool scope check. | Policy is a local file. No versioning or review flow. |
 | Confused deputy | Server never forwards the incoming token. | No delegation chain for downstream calls. |
@@ -142,7 +142,6 @@ Denials before the signature check prefix the SPIFFE ID with `unverified:`.
 - The compose stack uses the unix attestor with a shared PID namespace. It is weak and fits a single-host demo only.
 - No async JWKS fetch and no refetch on unknown `kid`. The MCP server caches the authz JWKS for 60s with a blocking fetch.
 - No client-side issuer allowlist. The agent trusts the authorization server named in Protected Resource Metadata.
-- No `jti` replay tracking for JWT-SVIDs or access tokens.
 - No `tools/list` filtering. Every caller sees all tools; the scope check applies at `tools/call`.
 
 ## Status
