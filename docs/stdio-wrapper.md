@@ -5,7 +5,7 @@
 ## Usage
 
 ```sh
-mcp-svid-stdio --resource URI --scope SCOPE [options] -- command [args...]
+mcp-svid-stdio --resource URI --scope SCOPE --trusted-issuer URL [options] -- command [args...]
 ```
 
 Example, as an MCP host config entry:
@@ -13,7 +13,10 @@ Example, as an MCP host config entry:
 ```json
 {
   "command": "mcp-svid-stdio",
-  "args": ["--resource", "http://notes-a:8101/mcp", "--scope", "notes:read", "--", "my-stdio-server"]
+  "args": [
+    "--resource", "http://notes-a:8101/mcp", "--scope", "notes:read",
+    "--trusted-issuer", "http://authz:8100", "--", "my-stdio-server"
+  ]
 }
 ```
 

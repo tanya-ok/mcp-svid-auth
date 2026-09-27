@@ -68,7 +68,7 @@ sequenceDiagram
 |---|---|---|
 | `authz` | `mcp-svid-authz` | Token endpoint. JWT-SVID client assertion in, audience-bound JWT access token out. Publishes JWKS and RFC 8414 metadata. |
 | `mcp_server` | `mcp-svid-notes` | MCP server over Streamable HTTP. Tools `notes.search` (`notes:read`) and `notes.write` (`notes:write`). |
-| `agent_client` | `mcp-svid-agent` | Discovers the authorization server, fetches its SVID, gets a token, calls tools. `--steal-token` replays a token against another server. |
+| `agent_client` | `mcp-svid-agent` | Discovers the authorization server, refuses it unless it is on the `--trusted-issuer` allowlist, fetches its SVID, gets a token, calls tools. `--steal-token` replays a token against another server. |
 | `stdio_wrapper` | `mcp-svid-stdio` | Starts a local stdio MCP server with `MCP_ACCESS_TOKEN_FILE` (0600, refreshed). Fails closed on expiry. `--export-token-env` also sets `MCP_ACCESS_TOKEN` (weaker, see below). |
 | `deploy/` | `make demo` | SPIRE server and agent 1.15.3 (pinned by digest), registration entries, the three services, four scenarios. |
 
@@ -126,6 +126,7 @@ Denials before the signature check prefix the SPIFFE ID with `unverified:`.
 | Static key leak | No static keys. SVID and access token both live 5 min. | A stolen access token works until expiry. |
 | Token replay to another server | `aud` bound to one resource. Each server checks `aud` equals its own URI. | None within one issuer. |
 | JWT-SVID replay to authz | SVID `aud` must be the issuer only. 5 min TTL. | No `jti` tracking. A stolen SVID can mint tokens for its whole lifetime. |
+| SVID harvesting by a malicious resource | The agent mints SVIDs only for issuers on its `--trusted-issuer` allowlist. An issuer named in Protected Resource Metadata that is not on the list is refused, and logged as `issuer_refused`, before any request to it and before any SVID fetch. Exact match after scheme, host and default port normalization; no prefix match. | The allowlist is per process, not per resource. |
 | Workload impersonation | SPIRE attestation. | Unix attestor is UID based. Any process under a registered UID gets that identity. |
 | Over-broad access | Allowlist per SPIFFE ID, resource and scope. Per-tool scope check. | Policy is a local file. No versioning or review flow. |
 | Confused deputy | Server never forwards the incoming token. | No delegation chain for downstream calls. |
@@ -141,7 +142,6 @@ Denials before the signature check prefix the SPIFFE ID with `unverified:`.
 - No X.509-SVID or WIT-SVID client authentication. JWT-SVID only.
 - The compose stack uses the unix attestor with a shared PID namespace. It is weak and fits a single-host demo only.
 - No async JWKS fetch and no refetch on unknown `kid`. The MCP server caches the authz JWKS for 60s with a blocking fetch.
-- No client-side issuer allowlist. The agent trusts the authorization server named in Protected Resource Metadata.
 - No `jti` replay tracking for JWT-SVIDs or access tokens.
 - No `tools/list` filtering. Every caller sees all tools; the scope check applies at `tools/call`.
 
