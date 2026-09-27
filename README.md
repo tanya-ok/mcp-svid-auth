@@ -140,10 +140,8 @@ Denials before the signature check prefix the SPIFFE ID with `unverified:`.
 - No user delegation. The agent acts as itself (`client_credentials`). No token exchange or `act` claim chain yet.
 - No X.509-SVID or WIT-SVID client authentication. JWT-SVID only.
 - The compose stack uses the docker attestor with label selectors, a shared PID namespace and the Docker socket mounted into the SPIRE agent. It fits a single-host demo only. See [docs/security.md](docs/security.md#docker-socket-exposure).
-- No async JWKS fetch and no refetch on unknown `kid`. The MCP server caches the authz JWKS for 60s with a blocking fetch.
 - No client-side issuer allowlist. The agent trusts the authorization server named in Protected Resource Metadata.
 - No `jti` replay tracking for JWT-SVIDs or access tokens.
-- No `tools/list` filtering. Every caller sees all tools; the scope check applies at `tools/call`.
 
 ## Status
 
