@@ -67,11 +67,25 @@ async def resolve_host(host: str) -> list[str]:
     return sorted({str(info[4][0]) for info in infos})
 
 
+_IPV4_COMPATIBLE = ipaddress.IPv6Network("::/96")
+_NAT64_WELL_KNOWN = ipaddress.IPv6Network("64:ff9b::/96")
+_SITE_LOCAL = ipaddress.IPv6Network("fec0::/10")
+
+
 def is_public_address(address: str) -> bool:
-    """True only for globally routable unicast addresses (not private, loopback, link-local)."""
+    """True only for globally routable unicast addresses (not private, loopback, link-local).
+
+    IPv6 forms that embed an IPv4 address (mapped, IPv4-compatible, NAT64 well-known prefix)
+    are judged by the embedded address. Deprecated site-local fec0::/10 is refused.
+    """
     ip = ipaddress.ip_address(address.split("%", 1)[0])
-    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
-        ip = ip.ipv4_mapped
+    if isinstance(ip, ipaddress.IPv6Address):
+        if ip in _SITE_LOCAL:
+            return False
+        if ip.ipv4_mapped is not None:
+            return is_public_address(str(ip.ipv4_mapped))
+        if ip in _IPV4_COMPATIBLE or ip in _NAT64_WELL_KNOWN:
+            return is_public_address(str(ipaddress.IPv4Address(int(ip) & 0xFFFFFFFF)))
     return ip.is_global and not ip.is_multicast
 
 
@@ -342,7 +356,16 @@ def add_url_flags(parser: argparse.ArgumentParser) -> None:
 
 
 def url_policy_from_args(args: argparse.Namespace) -> UrlPolicy:
-    return UrlPolicy(allow_http=args.allow_http, allow_private=args.allow_private_network)
+    """Build the URL policy; a relaxed policy is announced on stderr as a JSON event."""
+    policy = UrlPolicy(allow_http=args.allow_http, allow_private=args.allow_private_network)
+    if policy.allow_http or policy.allow_private:
+        event = {
+            "event": "url_policy_relaxed",
+            "allow_http": policy.allow_http,
+            "allow_private_network": policy.allow_private,
+        }
+        print(json.dumps(event), file=sys.stderr)
+    return policy
 
 
 def build_parser() -> argparse.ArgumentParser:

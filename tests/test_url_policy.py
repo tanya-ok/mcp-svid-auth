@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 import httpx2
@@ -89,13 +90,23 @@ class Upstream:
         "fc00::1",
         "::ffff:127.0.0.1",
         "::ffff:10.0.0.1",
+        "64:ff9b::a9fe:a9fe",
+        "64:ff9b::7f00:1",
+        "64:ff9b::a00:1",
+        "::a9fe:a9fe",
+        "::7f00:1",
+        "::",
+        "fec0::1",
+        "feff::1",
     ],
 )
 def test_non_public_addresses(address: str) -> None:
     assert not is_public_address(address)
 
 
-@pytest.mark.parametrize("address", [PUBLIC_V4, PUBLIC_V6, "::ffff:9.9.9.9"])
+@pytest.mark.parametrize(
+    "address", [PUBLIC_V4, PUBLIC_V6, "::ffff:9.9.9.9", "64:ff9b::909:909", "::909:909"]
+)
 def test_public_addresses(address: str) -> None:
     assert is_public_address(address)
 
@@ -250,6 +261,33 @@ def test_cli_dev_flags_default_off(module: Any) -> None:
     dev_args = [*base, "--allow-http", "--allow-private-network", *tail]
     dev = agent_client.url_policy_from_args(module.build_parser().parse_args(dev_args))
     assert (dev.allow_http, dev.allow_private) == (True, True)
+
+
+@pytest.mark.parametrize(
+    ("flags", "expected"),
+    [
+        ([], None),
+        (["--allow-http"], (True, False)),
+        (["--allow-private-network"], (False, True)),
+        (["--allow-http", "--allow-private-network"], (True, True)),
+    ],
+)
+def test_relaxed_url_policy_is_announced(
+    flags: list[str], expected: tuple[bool, bool] | None, capsys: pytest.CaptureFixture[str]
+) -> None:
+    base = ["--resource", RESOURCE, "--scope", "s", "--trusted-issuer", ISSUER]
+    agent_client.url_policy_from_args(agent_client.build_parser().parse_args(base + flags))
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    if expected is None:
+        assert captured.err == ""
+        return
+    event = json.loads(captured.err)
+    assert event == {
+        "event": "url_policy_relaxed",
+        "allow_http": expected[0],
+        "allow_private_network": expected[1],
+    }
 
 
 def test_agent_logs_url_refusal(
