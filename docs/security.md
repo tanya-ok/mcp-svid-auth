@@ -9,7 +9,7 @@
 |---|---|---|
 | Static key leak | No static keys. SVID and access token both live 5 min. | A stolen access token works until expiry. |
 | Token replay to another server | `aud` bound to one resource. Each server checks `aud` equals its own URI. | None within one issuer. |
-| JWT-SVID replay to authz | SVID `aud` must be the issuer only. 5 min TTL. | No `jti` tracking. A stolen SVID can mint tokens for its whole lifetime. |
+| JWT-SVID replay to authz | SVID `aud` must be the issuer only. 5 min TTL. Each `(sub, jti)` is accepted once. | Seen-set is in memory and per process. A stolen, unused SVID still works once. |
 | Workload impersonation | SPIRE attestation. | Unix attestor is UID based. Any process under a registered UID gets that identity. |
 | Over-broad access | Allowlist per SPIFFE ID, resource and scope. Per-tool scope check. | Policy is a local file. No versioning or review flow. |
 | Confused deputy | Server never forwards the incoming token. | No delegation chain for downstream calls. |
@@ -30,9 +30,11 @@
 | SVID `alg` in RS256/384/512, ES256/384/512, PS256/384 | 401 `invalid_client` | No `none`, no HMAC |
 | `sub` is a valid SPIFFE ID in the policy trust domain | 401 `invalid_client` | Caller identity comes from the expected trust domain |
 | Signature against the SPIRE JWT bundle, key by `kid` | 401 `invalid_client` | The SVID was issued by SPIRE for this trust domain |
-| `sub`, `aud`, `exp`, `iat` present; `exp` not past (30s leeway) | 401 `invalid_client` | The SVID is current |
+| `sub`, `aud`, `exp`, `iat`, `jti` present; `exp` not past (30s leeway) | 401 `invalid_client` | The SVID is current and individually identifiable |
 | `aud` is the issuer and nothing else | 401 `invalid_client` | The SVID was minted for this authorization server only |
 | `exp - iat` at most `--max-svid-lifetime` (300s) | 401 `invalid_client` | Long-lived SVIDs cannot be used as credentials |
+| `jti` a string of 1 to 256 characters, `(sub, jti)` not seen before | 401 `invalid_client` | Each SVID is used once (RFC 7523 section 3) |
+| Replay cache has room | 503 `temporarily_unavailable` | Memory is bounded and a full cache fails closed |
 | `client_id`, if sent, equals `sub` | 401 `invalid_client` | No identity mismatch between parameters |
 | SPIFFE ID in policy | 400 `unauthorized_client` | Only allowlisted workloads get tokens |
 | Resource allowed for that SPIFFE ID | 400 `invalid_target` | Per-server allowlist |
@@ -40,6 +42,15 @@
 | Trust bundle fetch fails | 503 `temporarily_unavailable` | Fails closed without leaking details |
 
 Error descriptions returned to the client are fixed strings. Exception details go only to the audit log.
+
+### JWT-SVID replay tracking
+
+- The token endpoint records each accepted `(sub, jti)` pair after the signature, audience and lifetime checks pass. Invalid assertions are not recorded.
+- An entry lives until the assertion `exp` plus the 30s clock leeway, the same window in which the SVID would still validate. Expired entries are evicted on every insert.
+- A second request with the same pair gets 401 `invalid_client` (`client assertion replayed`, RFC 7523 section 3.2). The audit line names the `jti`.
+- The cache holds at most 10,000 live entries. When full, new assertions get 503 `temporarily_unavailable` instead of evicting live entries.
+- The seen-set is in memory and per process. Several authz replicas, or a restart, each start with their own empty set.
+- SPIRE sets `jti` on JWT-SVIDs only when the registration entry asks for it, and the SPIRE agent caches JWT-SVIDs per audience. A workload that requests two tokens with one cached SVID gets the second request rejected.
 
 ### MCP server (`mcp_server.py`)
 
@@ -71,7 +82,8 @@ Error descriptions returned to the client are fixed strings. Exception details g
 | Gap | Effect | Where |
 |---|---|---|
 | Unix workload attestor | UID based. Any process under a registered UID gets that identity. The compose stack shares the SPIRE agent PID namespace. Fits a single-host demo only. | `deploy/spire/agent.conf`, `deploy/docker-compose.yml` |
-| No `jti` replay tracking | A stolen JWT-SVID or access token is usable until it expires (5 min). | `authz.py`, `mcp_server.py` |
+| No access token `jti` tracking | A stolen access token is usable until it expires (5 min). | `mcp_server.py` |
+| JWT-SVID seen-set per process | Replicas or a restart forget seen `jti` values. | `ReplayCache` |
 | No JWKS refetch on unknown `kid` | The MCP server caches the authz JWKS for 60s with a blocking fetch. A restarted authz is unknown for up to 60s. | `JwksFetcher` |
 | No client-side issuer allowlist | The agent trusts the authorization server named in Protected Resource Metadata. A malicious server could point it at another issuer; the SVID `aud` then names that issuer. | `agent_client.discover` |
 | No `tools/list` filtering | Every caller sees all tools. The scope check applies at `tools/call`. | `ToolScopeGuard` |
