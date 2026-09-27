@@ -30,10 +30,13 @@ echo "== authz and MCP servers"
 docker compose up -d --build authz notes-a notes-b
 sleep 3
 
+# Compose service names resolve to private addresses and speak plain http, so the agents run
+# with the dev flags that relax the URL checks.
 run() {
   local agent="$1"
   shift
-  docker compose run --rm --no-deps "$agent" --trusted-issuer "$AUTHZ" "$@" || true
+  docker compose run --rm --no-deps "$agent" --trusted-issuer "$AUTHZ" \
+    --allow-http --allow-private-network "$@" || true
 }
 
 echo

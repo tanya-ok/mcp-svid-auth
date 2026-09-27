@@ -13,6 +13,7 @@ The table below is the short view. [Threat model (STPA-Sec)](threat-model.md) de
 | Token replay to another server | `aud` bound to one resource. Each server checks `aud` equals its own URI. | None within one issuer. |
 | JWT-SVID replay to authz | SVID `aud` must be the issuer only. 5 min TTL. Default `--svid-replay reject`: `jti` required, each `(sub, jti)` accepted once. | The compose demo runs `allow-reuse-within-lifetime` because the SPIRE 1.15.3 agent re-serves cached SVIDs; there a stolen SVID mints tokens until it expires. In `reject` mode the seen-set is in memory and per process, and a stolen, unused SVID still works once. |
 | SVID harvesting by a malicious resource | The agent mints SVIDs only for issuers on its `--trusted-issuer` allowlist. An issuer named in Protected Resource Metadata that is not on the list is refused, and logged as `issuer_refused`, before any request to it and before any SVID fetch. Exact match after scheme, host and default port normalization; no prefix match. | The allowlist is per process, not per resource. |
+| Discovery SSRF | Every URL the agent fetches or sends a credential to (resource, issuer, `token_endpoint`, tool call) must be `https` and resolve only to public addresses. Refused URLs are logged as `url_refused` and get no request. | `--allow-http` and `--allow-private-network` turn the checks off for dev; the compose demo needs both. The check resolves the host itself and the HTTP client resolves it again, so DNS rebinding between the two lookups is not covered. |
 | Workload impersonation | SPIRE docker attestor. Identity is bound to a container label, not a UID. | Anyone who can start a container with a registered label on that host gets that identity. |
 | Over-broad access | Allowlist per SPIFFE ID, resource and scope. Per-tool scope check. | Policy is a local file. No versioning or review flow. |
 | Confused deputy | Server never forwards the incoming token. | No delegation chain for downstream calls. |
@@ -111,7 +112,8 @@ Residual risk in `allow-reuse-within-lifetime`: a JWT-SVID stolen from the agent
 | JWT-SVID reuse allowed in the demo | `allow-reuse-within-lifetime`: a stolen SVID mints tokens until it expires (max 300s). Needed because the SPIRE 1.15.3 agent re-serves cached SVIDs. | `deploy/docker-compose.yml` |
 | JWT-SVID seen-set per process | `reject` mode only. Replicas or a restart forget seen `jti` values. | `ReplayCache` |
 | Signing key in memory | Rotates only on restart. | `AuthzServer.signing_key` |
-| Plain HTTP | No TLS inside the compose network. | `deploy/docker-compose.yml` |
+| Plain HTTP | No TLS inside the compose network. The demo agents run with `--allow-http --allow-private-network`. | `deploy/docker-compose.yml`, `deploy/demo.sh` |
+| DNS rebinding | The URL check and the HTTP client resolve the host separately. A name that changes answer between the two lookups can still reach a private address. | `agent_client.UrlPolicy` |
 
 ## Docker socket exposure
 

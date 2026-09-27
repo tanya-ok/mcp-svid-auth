@@ -1,6 +1,8 @@
 """Agent: JWT-SVID in, access token out, MCP tool calls with that token.
 
 Flow per MCP server:
+0. Every URL the agent fetches or sends a credential to must be https and resolve only to
+   public addresses, unless the operator relaxes that with the dev flags.
 1. Read Protected Resource Metadata to find the authorization server.
    Refuse it unless it is on the operator's trusted issuer allowlist.
 2. Read authorization server metadata to find the issuer and token endpoint.
@@ -13,10 +15,12 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import ipaddress
 import json
+import socket
 import sys
-from collections.abc import Callable, Collection
-from dataclasses import dataclass
+from collections.abc import Awaitable, Callable, Collection
+from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
@@ -43,7 +47,78 @@ class UntrustedIssuerError(TokenRequestError):
         self.issuers = issuers
 
 
+class UnsafeUrlError(TokenRequestError):
+    """A URL failed the scheme or address check. Nothing was sent to it."""
+
+    def __init__(self, url: str, reason: str) -> None:
+        super().__init__(f"refused URL: {reason}")
+        self.url = url
+        self.reason = reason
+
+
 _DEFAULT_PORTS = {"http": 80, "https": 443}
+
+Resolver = Callable[[str], Awaitable[list[str]]]
+
+
+async def resolve_host(host: str) -> list[str]:
+    """All addresses `host` resolves to, without blocking the event loop."""
+    infos = await asyncio.get_running_loop().getaddrinfo(host, None, type=socket.SOCK_STREAM)
+    return sorted({str(info[4][0]) for info in infos})
+
+
+def is_public_address(address: str) -> bool:
+    """True only for globally routable unicast addresses (not private, loopback, link-local)."""
+    ip = ipaddress.ip_address(address.split("%", 1)[0])
+    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
+        ip = ip.ipv4_mapped
+    return ip.is_global and not ip.is_multicast
+
+
+@dataclass(frozen=True)
+class UrlPolicy:
+    """Checks each URL the client fetches, or sends a credential to, before the request.
+
+    Default: https only, and every address the host resolves to must be public, so a malicious
+    Protected Resource Metadata or authorization server metadata document cannot point the
+    client at internal services (SSRF). A host that does not resolve is refused. The check
+    resolves the name itself; the HTTP client resolves it again, so DNS rebinding between the
+    two lookups is not covered.
+    """
+
+    allow_http: bool = False
+    allow_private: bool = False
+    resolve: Resolver = field(default=resolve_host, compare=False)
+
+    async def check(self, url: str) -> None:
+        parts = urlsplit(url)
+        schemes = ("https", "http") if self.allow_http else ("https",)
+        if parts.scheme.lower() not in schemes:
+            raise UnsafeUrlError(url, "scheme not allowed")
+        host = parts.hostname
+        if not host or "@" in parts.netloc:
+            raise UnsafeUrlError(url, "no host or userinfo present")
+        if self.allow_private:
+            return
+        try:
+            addresses = [host] if _is_ip_literal(host) else await self.resolve(host)
+        except OSError:
+            raise UnsafeUrlError(url, "host does not resolve") from None
+        if not addresses:
+            raise UnsafeUrlError(url, "host does not resolve")
+        if not all(is_public_address(a) for a in addresses):
+            raise UnsafeUrlError(url, "host resolves to a non-public address")
+
+
+def _is_ip_literal(host: str) -> bool:
+    try:
+        ipaddress.ip_address(host.split("%", 1)[0])
+    except ValueError:
+        return False
+    return True
+
+
+STRICT_URLS = UrlPolicy()
 
 
 def normalize_issuer(url: str) -> str:
@@ -95,15 +170,20 @@ class Discovery:
 
 
 async def discover(
-    resource: str, trusted_issuers: Collection[str], http: HttpFactory = default_http
+    resource: str,
+    trusted_issuers: Collection[str],
+    http: HttpFactory = default_http,
+    url_policy: UrlPolicy = STRICT_URLS,
 ) -> Discovery:
     """Find the token endpoint for `resource`, using only an allowlisted authorization server.
 
     The allowlist check runs before any request to the authorization server and before any
-    SVID is fetched, so a resource cannot steer the agent to an issuer of its choosing.
+    SVID is fetched, so a resource cannot steer the agent to an issuer of its choosing. The
+    resource URL, the issuer and the token endpoint each pass `url_policy` before use.
     """
     if not trusted_issuers:
         raise ValueError("at least one trusted issuer is required")
+    await url_policy.check(resource)
     async with http() as client:
         prm = (await client.get(resource_metadata_url(resource))).raise_for_status().json()
         if prm.get("resource") != resource:
@@ -113,11 +193,16 @@ async def discover(
         if not trusted:
             raise UntrustedIssuerError(resource, named)
         issuer = trusted[0]
+        await url_policy.check(issuer)
         meta_url = issuer.rstrip("/") + "/.well-known/oauth-authorization-server"
         meta = (await client.get(meta_url)).raise_for_status().json()
     if meta.get("issuer") != issuer:
         raise TokenRequestError("authorization server metadata issuer mismatch")
-    return Discovery(issuer=issuer, token_endpoint=meta["token_endpoint"])
+    token_endpoint = meta.get("token_endpoint")
+    if not isinstance(token_endpoint, str):
+        raise TokenRequestError("authorization server metadata has no token_endpoint")
+    await url_policy.check(token_endpoint)
+    return Discovery(issuer=issuer, token_endpoint=token_endpoint)
 
 
 async def fetch_access_token(  # noqa: PLR0913
@@ -128,8 +213,9 @@ async def fetch_access_token(  # noqa: PLR0913
     trusted_issuers: Collection[str],
     spiffe_id: str | None = None,
     http: HttpFactory = default_http,
+    url_policy: UrlPolicy = STRICT_URLS,
 ) -> dict[str, Any]:
-    found = await discover(resource, trusted_issuers, http)
+    found = await discover(resource, trusted_issuers, http, url_policy)
     form = {
         "grant_type": "client_credentials",
         "client_assertion_type": CLIENT_ASSERTION_TYPE,
@@ -149,14 +235,17 @@ async def fetch_access_token(  # noqa: PLR0913
     return body
 
 
-async def call_tool(
+async def call_tool(  # noqa: PLR0913
     resource: str,
     token: str,
     tool: str,
     arguments: dict[str, Any],
+    *,
     http: HttpFactory = default_http,
+    url_policy: UrlPolicy = STRICT_URLS,
 ) -> str:
     """Call one tool. Returns the text result, or 'HTTP <status>: <challenge>' on auth failure."""
+    await url_policy.check(resource)
     auth_failures: list[str] = []
 
     async def record(response: httpx2.Response) -> None:
@@ -180,12 +269,14 @@ async def call_tool(
 
 async def run(args: argparse.Namespace) -> int:
     source: SvidSource = WorkloadApiSvidSource(socket_path=args.socket)
+    urls = url_policy_from_args(args)
     token = await fetch_access_token(
         args.resource,
         source,
         spiffe_id=args.spiffe_id,
         scope=args.scope,
         trusted_issuers=args.trusted_issuer,
+        url_policy=urls,
     )
     print(
         json.dumps(
@@ -204,7 +295,7 @@ async def run(args: argparse.Namespace) -> int:
         ("notes.search", {"query": "welcome"}),
         ("notes.write", {"text": "hello from the agent"}),
     ):
-        outcome = await call_tool(target, token["access_token"], tool, arguments)
+        outcome = await call_tool(target, token["access_token"], tool, arguments, url_policy=urls)
         print(json.dumps({"event": "call", "server": target, "tool": tool, "result": outcome}))
     return 0
 
@@ -217,8 +308,27 @@ def issuer_arg(value: str) -> str:
     return value
 
 
-def refusal_event(exc: UntrustedIssuerError) -> dict[str, Any]:
+def refusal_event(exc: UntrustedIssuerError | UnsafeUrlError) -> dict[str, Any]:
+    if isinstance(exc, UnsafeUrlError):
+        return {"event": "url_refused", "url": exc.url, "reason": exc.reason}
     return {"event": "issuer_refused", "resource": exc.resource, "issuers": exc.issuers}
+
+
+def add_url_flags(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--allow-http",
+        action="store_true",
+        help="dev only: accept plain http URLs for discovery, token requests and tool calls",
+    )
+    parser.add_argument(
+        "--allow-private-network",
+        action="store_true",
+        help="dev only: accept hosts that resolve to private, loopback or link-local addresses",
+    )
+
+
+def url_policy_from_args(args: argparse.Namespace) -> UrlPolicy:
+    return UrlPolicy(allow_http=args.allow_http, allow_private=args.allow_private_network)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -237,6 +347,7 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="URL",
         help="authorization server issuer the agent may mint SVIDs for; repeatable, exact match",
     )
+    add_url_flags(parser)
     parser.add_argument("--spiffe-id", help="sent as client_id")
     parser.add_argument("--socket", help="Workload API socket, default SPIFFE_ENDPOINT_SOCKET")
     parser.add_argument(
@@ -251,7 +362,7 @@ def main(argv: list[str] | None = None) -> None:
     parser = build_parser()
     try:
         sys.exit(asyncio.run(run(parser.parse_args(argv))))
-    except UntrustedIssuerError as exc:
+    except (UntrustedIssuerError, UnsafeUrlError) as exc:
         print(json.dumps(refusal_event(exc)))
         sys.exit(2)
     except TokenRequestError as exc:

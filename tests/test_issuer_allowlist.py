@@ -16,7 +16,7 @@ from mcp_svid_auth.agent_client import (
     is_trusted_issuer,
     normalize_issuer,
 )
-from tests.conftest import ISSUER, RESEARCH, SERVER_A
+from tests.conftest import DEV_URLS, ISSUER, RESEARCH, SERVER_A
 
 pytestmark = pytest.mark.anyio
 
@@ -63,6 +63,7 @@ async def test_allowed_issuer_gets_token(world_factory: Any) -> None:
             scope="notes:read",
             trusted_issuers=["HTTP://Authz.Test:80"],
             http=world.http,
+            url_policy=DEV_URLS,
         )
     assert token["scope"] == "notes:read"
 
@@ -87,7 +88,12 @@ async def test_untrusted_issuer_refused_before_svid(named: str) -> None:
     source = CountingSource()
     with pytest.raises(UntrustedIssuerError) as refused:
         await fetch_access_token(
-            ROGUE, source, scope="notes:read", trusted_issuers=[ISSUER], http=rogue.http
+            ROGUE,
+            source,
+            scope="notes:read",
+            trusted_issuers=[ISSUER],
+            http=rogue.http,
+            url_policy=DEV_URLS,
         )
     assert refused.value.issuers == [named]
     assert source.audiences == []
@@ -104,13 +110,16 @@ async def test_path_issuer_trailing_slash_refused() -> None:
             scope="notes:read",
             trusted_issuers=["https://as.test/tenant"],
             http=rogue.http,
+            url_policy=DEV_URLS,
         )
     assert source.audiences == []
 
 
 async def test_first_trusted_issuer_is_used(world_factory: Any) -> None:
     async with world_factory() as world:
-        found = await agent_client.discover(SERVER_A, [ISSUER], http=world.http)
+        found = await agent_client.discover(
+            SERVER_A, [ISSUER], http=world.http, url_policy=DEV_URLS
+        )
     assert found.issuer == ISSUER
 
 
@@ -178,11 +187,20 @@ def test_agent_logs_refusal(
     rogue = RogueResource(["http://attacker.test"])
     source = CountingSource()
     monkeypatch.setattr(agent_client, "WorkloadApiSvidSource", lambda **_kw: source)
-    patched = functools.partial(fetch_access_token, http=rogue.http)
+    patched = functools.partial(fetch_access_token, http=rogue.http, url_policy=DEV_URLS)
     monkeypatch.setattr(agent_client, "fetch_access_token", patched)
     with pytest.raises(SystemExit) as exited:
         agent_client.main(
-            ["--resource", ROGUE, "--scope", "notes:read", "--trusted-issuer", ISSUER]
+            [
+                "--resource",
+                ROGUE,
+                "--scope",
+                "notes:read",
+                "--trusted-issuer",
+                ISSUER,
+                "--allow-http",
+                "--allow-private-network",
+            ]
         )
     assert exited.value.code == 2
     event = json.loads(capsys.readouterr().out.strip())

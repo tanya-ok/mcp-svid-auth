@@ -17,6 +17,7 @@ import pytest
 from starlette.applications import Starlette
 from starlette.types import Receive, Scope, Send
 
+from mcp_svid_auth.agent_client import UrlPolicy
 from mcp_svid_auth.audit import AuditLog
 from mcp_svid_auth.authz import AuthzServer
 from mcp_svid_auth.mcp_server import create_app
@@ -29,6 +30,8 @@ SERVER_B = "http://notes-b.test/mcp"
 RESEARCH = "spiffe://example.org/agent/research"
 INTRUDER = "spiffe://example.org/agent/intruder"
 READER = "spiffe://example.org/agent/reader"
+# The in-process world uses http and .test hosts that do not resolve.
+DEV_URLS = UrlPolicy(allow_http=True, allow_private=True)
 
 POLICY = {
     "trust_domain": "example.org",

@@ -15,10 +15,13 @@ Example, as an MCP host config entry:
   "command": "mcp-svid-stdio",
   "args": [
     "--resource", "http://notes-a:8101/mcp", "--scope", "notes:read",
-    "--trusted-issuer", "http://authz:8100", "--", "my-stdio-server"
+    "--trusted-issuer", "http://authz:8100",
+    "--allow-http", "--allow-private-network", "--", "my-stdio-server"
   ]
 }
 ```
+
+`--allow-http` and `--allow-private-network` are needed only because this example uses compose service names over plain http. Without them the wrapper accepts only `https` URLs that resolve to public addresses, and refuses anything else with a `url_refused` event on stderr and exit code 2.
 
 The child must read the token from `MCP_ACCESS_TOKEN_FILE` before each upstream call.
 

@@ -66,6 +66,8 @@ Agent that authenticates with its JWT-SVID
 | `--resource` | required | MCP server canonical URI |
 | `--scope` | required | Space separated scopes, e.g. 'notes:read notes:write' |
 | `--trusted-issuer` | required | Authorization server issuer the agent may mint SVIDs for; repeatable, exact match |
+| `--allow-http` | off | Dev only: accept plain http URLs for discovery, token requests and tool calls |
+| `--allow-private-network` | off | Dev only: accept hosts that resolve to private, loopback or link-local addresses |
 | `--spiffe-id` | none | Sent as client_id |
 | `--socket` | none | Workload API socket, default SPIFFE_ENDPOINT_SOCKET |
 | `--steal-token` | none | Demo: send the token issued for --resource to OTHER_RESOURCE instead |
@@ -79,6 +81,8 @@ Run a stdio MCP server with a short-lived token from the Workload API
 | `--resource` | required | Upstream resource the child calls |
 | `--scope` | required | Space separated scopes |
 | `--trusted-issuer` | required | Authorization server issuer the wrapper may mint SVIDs for; repeatable, exact match |
+| `--allow-http` | off | Dev only: accept plain http URLs for discovery, token requests and tool calls |
+| `--allow-private-network` | off | Dev only: accept hosts that resolve to private, loopback or link-local addresses |
 | `--socket` | none | Workload API socket, default SPIFFE_ENDPOINT_SOCKET |
 | `--refresh-margin` | `60` | Seconds before expiry to refresh |
 | `--export-token-env` | off | Also set MCP_ACCESS_TOKEN (weaker: visible in the environment, never refreshed) |

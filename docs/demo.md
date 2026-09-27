@@ -23,7 +23,7 @@ Registration entries use `docker:label:org.example.svid.workload:<name>` selecto
 | 3 | `agent/intruder` | notes-a | valid SVID, not in `policy.yaml`, token request fails with `unauthorized_client` |
 | 4 | `agent/research` | token for notes-a sent to notes-b | 401 `invalid_token`, audit reason `InvalidAudienceError` |
 
-Commands, as run by `deploy/demo.sh`. Each run also passes `--trusted-issuer http://authz:8100`, omitted below:
+Commands, as run by `deploy/demo.sh`. Each run also passes `--trusted-issuer http://authz:8100 --allow-http --allow-private-network`, omitted below. The last two relax the URL checks, because compose service names resolve to private addresses over plain http:
 
 ```sh
 # 1
@@ -68,4 +68,5 @@ The same behaviour is covered without SPIRE in `tests/`, using `LocalSvidIssuer`
 | `test_jwks_fetcher.py` | Async JWKS fetch, one refetch on unknown `kid` at most every 10s, fail closed when the fetch fails |
 | `test_authz_replay.py` | `--svid-replay` modes: `jti` required and single use in `reject`, reuse and missing `jti` accepted in `allow-reuse-within-lifetime`, malformed `jti` refused in both, full cache fails closed, demo sets the mode explicitly |
 | `test_issuer_allowlist.py` | Trusted issuer allowlist: unknown and lookalike issuers refused before any SVID fetch, refusal event |
+| `test_url_policy.py` | Discovery URL checks: https only, private, loopback and link-local addresses refused for the resource, issuer, token endpoint and tool call, dev flags |
 | `test_no_identifiers.py` | Optional anonymization denylist |
