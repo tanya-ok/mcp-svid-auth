@@ -42,6 +42,10 @@ DEFAULT_TOKEN_TTL = 300
 DEFAULT_MAX_SVID_LIFETIME = 300
 _CLOCK_SKEW = 30
 DEFAULT_REPLAY_CACHE_SIZE = 10_000
+# reject: jti required, each (sub, jti) accepted once. allow-reuse-within-lifetime: jti optional and
+# not tracked, for SVID sources that cache and re-serve one SVID (SPIRE 1.15.3 agent, see docs).
+SVID_REPLAY_MODES = ("reject", "allow-reuse-within-lifetime")
+DEFAULT_SVID_REPLAY = "reject"
 _MAX_JTI_LENGTH = 256
 # RFC 6749 section 3.3 scope-token characters.
 _SCOPE_TOKEN = re.compile(r"[\x21\x23-\x5B\x5D-\x7E]+")
@@ -104,6 +108,11 @@ class AuthzServer:
     )
     kid: str = field(default_factory=lambda: uuid.uuid4().hex[:16])
     replay_cache: ReplayCache = field(default_factory=ReplayCache)
+    svid_replay: str = DEFAULT_SVID_REPLAY
+
+    def __post_init__(self) -> None:
+        if self.svid_replay not in SVID_REPLAY_MODES:
+            raise ValueError(f"svid_replay must be one of {SVID_REPLAY_MODES}")
 
     def jwks(self) -> dict[str, Any]:
         jwk: dict[str, Any] = json.loads(ECAlgorithm.to_jwk(self.signing_key.public_key()))
@@ -143,13 +152,16 @@ class AuthzServer:
             raise AuthError(
                 "temporarily_unavailable", "trust bundle unavailable", 503, repr(exc)
             ) from exc
+        required = ["sub", "aud", "exp", "iat"]
+        if self.svid_replay == "reject":
+            required.append("jti")
         try:
             claims = jwt.decode(
                 assertion,
                 key,
                 algorithms=[alg],
                 audience=self.issuer,
-                options={"require": ["sub", "aud", "exp", "iat", "jti"]},
+                options={"require": required},
                 leeway=_CLOCK_SKEW,
             )
         except jwt.ExpiredSignatureError as exc:
@@ -172,12 +184,19 @@ class AuthzServer:
                 401,
                 f"exp - iat = {lifetime}s, max {self.max_svid_lifetime}s",
             )
+        self._check_jti(sub, claims)
+        return sub
+
+    def _check_jti(self, sub: str, claims: dict[str, Any]) -> None:
+        """Validate jti when present. In reject mode (jti required) record it and refuse reuse."""
+        if "jti" not in claims:
+            return
         jti = claims["jti"]
         if not isinstance(jti, str) or not 0 < len(jti) <= _MAX_JTI_LENGTH:
             raise AuthError("invalid_client", "client assertion jti invalid", 401)
-        # RFC 7523 section 3: remember each jti for as long as the assertion would be accepted.
-        self.replay_cache.add(sub, jti, int(claims["exp"]) + _CLOCK_SKEW, time.time())
-        return sub
+        if self.svid_replay == "reject":
+            # RFC 7523 section 3: remember each jti for as long as the assertion would be accepted.
+            self.replay_cache.add(sub, jti, int(claims["exp"]) + _CLOCK_SKEW, time.time())
 
     def issue(self, form: dict[str, str]) -> dict[str, Any]:
         if form.get("grant_type") != "client_credentials":
@@ -245,6 +264,9 @@ class AuthzServer:
             spiffe_id = (
                 str(sub.get("sub")) if decision == "allow" else f"unverified:{sub.get('sub')}"
             )
+            if decision == "allow":
+                # Lets reuse of one SVID be spotted in the audit trail when reuse is allowed.
+                reason = f"{reason} svid_jti={sub.get('jti', 'none')}"
         except jwt.PyJWTError:
             pass
         self.audit.write(spiffe_id=spiffe_id, tool=None, decision=decision, reason=reason)
@@ -304,6 +326,15 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_MAX_SVID_LIFETIME,
         help="reject JWT-SVIDs whose exp - iat exceeds this many seconds",
     )
+    parser.add_argument(
+        "--svid-replay",
+        choices=SVID_REPLAY_MODES,
+        default=DEFAULT_SVID_REPLAY,
+        help=(
+            "reject: require a JWT-SVID jti and accept each (sub, jti) once; "
+            "allow-reuse-within-lifetime: jti optional, a reused SVID is accepted until it expires"
+        ),
+    )
     return parser
 
 
@@ -324,6 +355,7 @@ def main(argv: list[str] | None = None) -> None:
         resolver=resolver,
         audit=AuditLog(path=args.audit_log, component="authz"),
         max_svid_lifetime=args.max_svid_lifetime,
+        svid_replay=args.svid_replay,
     )
     uvicorn.run(server.app(), host=args.host, port=args.port)
 
