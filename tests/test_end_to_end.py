@@ -12,6 +12,7 @@ from tests.conftest import INTRUDER, ISSUER, READER, RESEARCH, SERVER_A, SERVER_
 pytestmark = pytest.mark.anyio
 
 RW = "notes:read notes:write"
+TRUSTED = [ISSUER]
 
 
 @pytest.fixture
@@ -23,7 +24,7 @@ async def test_valid_flow_calls_both_tools(world_factory: Any) -> None:
     async with world_factory() as world:
         source = world.spire.source_for(RESEARCH)
         token = await fetch_access_token(
-            SERVER_A, source, scope=RW, spiffe_id=RESEARCH, http=world.http
+            SERVER_A, source, scope=RW, spiffe_id=RESEARCH, http=world.http, trusted_issuers=TRUSTED
         )
         found = await call_tool(
             SERVER_A, token["access_token"], "notes.search", {"query": "welcome"}, http=world.http
@@ -42,14 +43,22 @@ async def test_intruder_gets_no_token(world_factory: Any) -> None:
     async with world_factory() as world:
         with pytest.raises(TokenRequestError, match="unauthorized_client"):
             await fetch_access_token(
-                SERVER_A, world.spire.source_for(INTRUDER), scope="notes:read", http=world.http
+                SERVER_A,
+                world.spire.source_for(INTRUDER),
+                scope="notes:read",
+                http=world.http,
+                trusted_issuers=TRUSTED,
             )
 
 
 async def test_token_for_a_is_rejected_by_b(world_factory: Any) -> None:
     async with world_factory() as world:
         token = await fetch_access_token(
-            SERVER_A, world.spire.source_for(RESEARCH), scope=RW, http=world.http
+            SERVER_A,
+            world.spire.source_for(RESEARCH),
+            scope=RW,
+            http=world.http,
+            trusted_issuers=TRUSTED,
         )
         outcome = await call_tool(
             SERVER_B, token["access_token"], "notes.search", {"query": "welcome"}, http=world.http
@@ -65,7 +74,11 @@ async def test_token_for_a_is_rejected_by_b(world_factory: Any) -> None:
 async def test_scope_enforced_per_tool(world_factory: Any) -> None:
     async with world_factory() as world:
         token = await fetch_access_token(
-            SERVER_A, world.spire.source_for(READER), scope="notes:read", http=world.http
+            SERVER_A,
+            world.spire.source_for(READER),
+            scope="notes:read",
+            http=world.http,
+            trusted_issuers=TRUSTED,
         )
         read = await call_tool(
             SERVER_A, token["access_token"], "notes.search", {"query": "welcome"}, http=world.http
