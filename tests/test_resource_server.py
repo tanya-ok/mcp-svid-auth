@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import time
-from typing import Any
+from typing import Any, cast
 
 import jwt
 import pytest
@@ -149,3 +149,32 @@ def test_every_registered_tool_declares_a_scope() -> None:
     mcp, scopes = build_mcp("t", NotesStore())
     names = {t.name for t in mcp._tool_manager.list_tools()}
     assert names == set(scopes) == {"notes.search", "notes.write"}
+
+
+async def _listed_tools(world: Any, scope: str) -> list[str]:
+    body = {"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}}
+    response = await _raw_post(world, json.dumps(body).encode(), _mint(world, scope=scope))
+    assert response.status_code == 200
+    return sorted(t["name"] for t in response.json()["result"]["tools"])
+
+
+@pytest.mark.parametrize(
+    ("scope", "expected"),
+    [
+        ("notes:read", ["notes.search"]),
+        ("notes:write", ["notes.write"]),
+        ("notes:read notes:write", ["notes.search", "notes.write"]),
+        ("other:scope", []),
+    ],
+)
+async def test_tools_list_filtered_by_scope(
+    world_factory: Any, scope: str, expected: list[str]
+) -> None:
+    async with world_factory() as world:
+        assert await _listed_tools(world, scope) == expected
+
+
+async def test_tools_list_without_token_context_is_empty() -> None:
+    mcp, _ = build_mcp("t", NotesStore())
+    result = await mcp._handle_list_tools(cast(Any, None), None)
+    assert result.tools == []

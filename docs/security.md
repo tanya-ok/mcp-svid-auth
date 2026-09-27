@@ -48,6 +48,9 @@ Error descriptions returned to the client are fixed strings. Exception details g
 | Bearer token present | 401 with `resource_metadata` challenge | Unauthenticated calls are refused and told where to authenticate |
 | Header `typ` is `at+jwt` | 401 `invalid_token` | Only RFC 9068 access tokens, not SVIDs or ID tokens |
 | `kid` found in the authz JWKS | 401 `invalid_token` | Token signed by the configured authorization server |
+| Unknown `kid` triggers one JWKS refetch, at most every 10s | 401 `invalid_token` | A rotated authz key is picked up; random `kid` values cannot cause a fetch storm |
+| JWKS fetched only from `--jwks-uri`, never from `jku` or `x5u` | not applicable | A token cannot choose its own verification key |
+| JWKS fetch fails | 401 `invalid_token`, audit `jwks_unavailable` | Fails closed |
 | `alg` ES256, signature valid | 401 `invalid_token` | No algorithm confusion |
 | `iss` equals configured issuer | 401 `invalid_token` | No tokens from another issuer |
 | `aud` equals own resource URI | 401 `invalid_token` | A token for another server is useless here |
@@ -56,6 +59,7 @@ Error descriptions returned to the client are fixed strings. Exception details g
 | Body is valid JSON-RPC, each `tools/call` names a tool | 400 `invalid_request` | The scope guard cannot be bypassed with a malformed body |
 | Tool has a declared scope | 400 `invalid_request` | Deny by default for unknown tools |
 | Granted scopes include the tool scope | 403 `insufficient_scope` with `WWW-Authenticate` | Per-tool least privilege |
+| `tools/list` shows only tools whose scope was granted | tool omitted | A read-only token does not see `notes.write` |
 
 `build_mcp` also refuses to start if any registered tool has no declared scope.
 
@@ -73,9 +77,7 @@ Error descriptions returned to the client are fixed strings. Exception details g
 | Docker socket in the SPIRE agent | Full Docker API access for the agent container. See [Docker socket exposure](#docker-socket-exposure). | `deploy/docker-compose.yml` |
 | Label selectors | Anyone who can start a container with a registered label on the host gets that identity. Fits a single-host demo only. | `deploy/register.sh` |
 | No `jti` replay tracking | A stolen JWT-SVID or access token is usable until it expires (5 min). | `authz.py`, `mcp_server.py` |
-| No JWKS refetch on unknown `kid` | The MCP server caches the authz JWKS for 60s with a blocking fetch. A restarted authz is unknown for up to 60s. | `JwksFetcher` |
 | No client-side issuer allowlist | The agent trusts the authorization server named in Protected Resource Metadata. A malicious server could point it at another issuer; the SVID `aud` then names that issuer. | `agent_client.discover` |
-| No `tools/list` filtering | Every caller sees all tools. The scope check applies at `tools/call`. | `ToolScopeGuard` |
 | Signing key in memory | Rotates only on restart. | `AuthzServer.signing_key` |
 | Plain HTTP | No TLS inside the compose network. | `deploy/docker-compose.yml` |
 
