@@ -5,6 +5,8 @@
 
 ## Threat model
 
+The table below is the short view. [Threat model (STPA-Sec)](threat-model.md) derives these threats from the control structure, maps unsafe control actions to MCP 2026-07-28 clauses, and lists the ones not mitigated.
+
 | Threat | Mitigation here | Gap |
 |---|---|---|
 | Static key leak | No static keys. SVID and access token both live 5 min. | A stolen access token works until expiry. |
