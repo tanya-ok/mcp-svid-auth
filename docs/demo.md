@@ -71,4 +71,5 @@ The same behaviour is covered without SPIRE in `tests/`, using `LocalSvidIssuer`
 | `test_url_policy.py` | Discovery URL checks: https only, private, loopback and link-local addresses refused for the resource, issuer, token endpoint and tool call, dev flags |
 | `test_audit_chain.py` | Audit hash chain: links, resume across writers, edited, deleted, reordered and truncated lines detected, verify command |
 | `test_policy_reload.py` | Grant removal denies new tokens after reload, invalid or missing file fails closed, polling watcher, SIGHUP |
+| `test_token_expiry.py` | Tool calls bounded by token `exp`: 401 when the call outlives the token, `notes.write` refuses after expiry without storing |
 | `test_no_identifiers.py` | Optional anonymization denylist |

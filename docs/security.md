@@ -109,6 +109,8 @@ Time to denial after a grant is removed:
 | Tool has a declared scope | 400 `invalid_request` | Deny by default for unknown tools |
 | Granted scopes include the tool scope | 403 `insufficient_scope` with `WWW-Authenticate` | Per-tool least privilege |
 | `tools/list` shows only tools whose scope was granted | tool omitted | A read-only token does not see `notes.write` |
+| A `tools/call` still running at the token `exp` | 401 `invalid_token`, audit `token_expired_during_call` | No tool result is returned on an expired token |
+| `notes.write` re-checks the token `exp` just before it stores | Tool error `access token expired`, nothing stored | A state change never happens after the token expired, even if the call started before |
 
 `build_mcp` also refuses to start if any registered tool has no declared scope.
 

@@ -7,6 +7,8 @@ The server:
 - lists in tools/list only the tools the token's scopes allow,
 - denies tools/call for any tool without a declared scope, and unparseable bodies,
 - writes one JSON audit line per decision,
+- stops waiting for a tool call once the caller's token expires, and re-checks expiry
+  before a tool changes state,
 - never forwards the incoming token.
 """
 
@@ -23,6 +25,7 @@ from pathlib import Path
 from typing import Any, Protocol
 from urllib.parse import urlsplit
 
+import anyio
 import httpx2
 import jwt
 from mcp.server.auth.middleware.auth_context import AuthContextMiddleware, get_access_token
@@ -35,6 +38,7 @@ from mcp.server.auth.provider import AccessToken
 from mcp.server.auth.routes import build_resource_metadata_url
 from mcp.server.context import ServerRequestContext
 from mcp.server.mcpserver import MCPServer
+from mcp.server.mcpserver.exceptions import ToolError
 from mcp.server.streamable_http_manager import StreamableHTTPASGIApp, StreamableHTTPSessionManager
 from mcp.server.transport_security import TransportSecuritySettings
 from mcp.types import ListToolsResult, PaginatedRequestParams
@@ -202,11 +206,13 @@ class ToolScopeGuard:
         tool_scopes: dict[str, str],
         resource_metadata_url: str,
         audit: AuditLog,
+        clock: Callable[[], float] = time.time,
     ) -> None:
         self.app = app
         self.tool_scopes = tool_scopes
         self.resource_metadata_url = resource_metadata_url
         self.audit = audit
+        self.clock = clock
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] != "http" or scope["method"] != "POST":
@@ -249,7 +255,54 @@ class ToolScopeGuard:
             self.audit.write(
                 spiffe_id=spiffe_id, tool=call, decision="allow", reason=f"scope {required}"
             )
-        await self.app(scope, _replay(body, receive), send)
+        expires_at = user.access_token.expires_at if isinstance(user, AuthenticatedUser) else None
+        if not calls or expires_at is None:
+            await self.app(scope, _replay(body, receive), send)
+            return
+        await self._until_expiry(
+            scope,
+            _replay(body, receive),
+            send,
+            expires_at=expires_at,
+            spiffe_id=spiffe_id,
+            calls=calls,
+        )
+
+    async def _until_expiry(  # noqa: PLR0913
+        self,
+        scope: Scope,
+        receive: Receive,
+        send: Send,
+        *,
+        expires_at: int,
+        spiffe_id: str | None,
+        calls: list[str],
+    ) -> None:
+        """Run a tools/call request, but stop waiting for it once the token expires.
+
+        The response is abandoned, not the work: a sync tool keeps running on its worker
+        thread, so tools that change state re-check expiry themselves (`require_live_token`).
+        """
+        started = False
+
+        async def tracking_send(message: Message) -> None:
+            nonlocal started
+            if message["type"] == "http.response.start":
+                started = True
+            await send(message)
+
+        try:
+            with anyio.fail_after(max(0.0, expires_at - self.clock())):
+                await self.app(scope, receive, tracking_send)
+        except TimeoutError:
+            self.audit.write(
+                spiffe_id=spiffe_id,
+                tool=",".join(calls),
+                decision="deny",
+                reason="token_expired_during_call",
+            )
+            if not started:
+                await _error(send, 401, "invalid_token", "access token expired during the call")
 
 
 class AuditedRequireAuth:
@@ -359,6 +412,17 @@ async def _forbidden(send: Send, required: str, resource_metadata_url: str) -> N
     await send({"type": "http.response.body", "body": body})
 
 
+class TokenExpiredError(ToolError):
+    """The caller's access token expired before the tool reached its side effect."""
+
+
+def require_live_token(clock: Callable[[], float] = time.time) -> None:
+    """Raise unless the current request carries an access token that has not expired."""
+    token = get_access_token()
+    if token is None or token.expires_at is None or token.expires_at <= clock():
+        raise TokenExpiredError("access token expired")
+
+
 @dataclass
 class NotesStore:
     notes: list[str] = field(default_factory=lambda: ["welcome to the notes server"])
@@ -405,6 +469,7 @@ def build_mcp(name: str, store: NotesStore) -> tuple[MCPServer, dict[str, str]]:
 
     @tool("notes.write", "notes:write", "Append a note.")
     def write(text: str) -> str:
+        require_live_token()
         return f"stored note #{store.write(text)}"
 
     registered = {t.name for t in mcp._tool_manager.list_tools()}
