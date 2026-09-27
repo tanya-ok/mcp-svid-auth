@@ -142,7 +142,6 @@ Denials before the signature check prefix the SPIFFE ID with `unverified:`.
 - The compose stack uses the unix attestor with a shared PID namespace. It is weak and fits a single-host demo only.
 - No client-side issuer allowlist. The agent trusts the authorization server named in Protected Resource Metadata.
 - No `jti` replay tracking for JWT-SVIDs or access tokens.
-- No `tools/list` filtering. Every caller sees all tools; the scope check applies at `tools/call`.
 
 ## Status
 

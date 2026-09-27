@@ -59,6 +59,7 @@ Error descriptions returned to the client are fixed strings. Exception details g
 | Body is valid JSON-RPC, each `tools/call` names a tool | 400 `invalid_request` | The scope guard cannot be bypassed with a malformed body |
 | Tool has a declared scope | 400 `invalid_request` | Deny by default for unknown tools |
 | Granted scopes include the tool scope | 403 `insufficient_scope` with `WWW-Authenticate` | Per-tool least privilege |
+| `tools/list` shows only tools whose scope was granted | tool omitted | A read-only token does not see `notes.write` |
 
 `build_mcp` also refuses to start if any registered tool has no declared scope.
 
@@ -76,6 +77,5 @@ Error descriptions returned to the client are fixed strings. Exception details g
 | Unix workload attestor | UID based. Any process under a registered UID gets that identity. The compose stack shares the SPIRE agent PID namespace. Fits a single-host demo only. | `deploy/spire/agent.conf`, `deploy/docker-compose.yml` |
 | No `jti` replay tracking | A stolen JWT-SVID or access token is usable until it expires (5 min). | `authz.py`, `mcp_server.py` |
 | No client-side issuer allowlist | The agent trusts the authorization server named in Protected Resource Metadata. A malicious server could point it at another issuer; the SVID `aud` then names that issuer. | `agent_client.discover` |
-| No `tools/list` filtering | Every caller sees all tools. The scope check applies at `tools/call`. | `ToolScopeGuard` |
 | Signing key in memory | Rotates only on restart. | `AuthzServer.signing_key` |
 | Plain HTTP | No TLS inside the compose network. | `deploy/docker-compose.yml` |
