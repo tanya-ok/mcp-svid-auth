@@ -45,7 +45,7 @@ make down
 
 1. Starts the SPIRE server (1.15.3, pinned by digest) and exports its bundle.
 2. Generates a join token and starts the SPIRE agent.
-3. Registers five workloads by unix UID (`deploy/register.sh`).
+3. Registers five workloads by container label (`deploy/register.sh`).
 4. Builds and starts `authz`, `notes-a` and `notes-b`.
 5. Runs the four [demo scenarios](demo.md) and prints the audit lines.
 
