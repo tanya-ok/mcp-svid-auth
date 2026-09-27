@@ -7,8 +7,10 @@ RFC 8707. Access tokens follow the RFC 9068 JWT profile.
 from __future__ import annotations
 
 import argparse
+import heapq
 import json
 import re
+import threading
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -39,9 +41,54 @@ ACCESS_TOKEN_ALG = "ES256"  # noqa: S105 - algorithm name, not a secret
 DEFAULT_TOKEN_TTL = 300
 DEFAULT_MAX_SVID_LIFETIME = 300
 _CLOCK_SKEW = 30
+DEFAULT_REPLAY_CACHE_SIZE = 10_000
+_MAX_JTI_LENGTH = 256
 # RFC 6749 section 3.3 scope-token characters.
 _SCOPE_TOKEN = re.compile(r"[\x21\x23-\x5B\x5D-\x7E]+")
 _NO_STORE = {"Cache-Control": "no-store", "Pragma": "no-cache"}
+
+
+@dataclass
+class ReplayCache:
+    """Seen (sub, jti) pairs, each kept until its assertion expires plus clock skew.
+
+    In-memory and per process: replicas or a restart do not share it. When full after evicting
+    expired entries, new assertions are refused (fail closed) instead of forgetting live ones.
+    """
+
+    max_entries: int = DEFAULT_REPLAY_CACHE_SIZE
+    _expiry: dict[tuple[str, str], float] = field(default_factory=dict)
+    _heap: list[tuple[float, tuple[str, str]]] = field(default_factory=list)
+    _lock: threading.Lock = field(default_factory=threading.Lock)
+
+    def __len__(self) -> int:
+        return len(self._expiry)
+
+    def evict_expired(self, now: float) -> None:
+        with self._lock:
+            self._evict(now)
+
+    def _evict(self, now: float) -> None:
+        while self._heap and self._heap[0][0] <= now:
+            _, key = heapq.heappop(self._heap)
+            self._expiry.pop(key, None)
+
+    def add(self, sub: str, jti: str, expires_at: float, now: float) -> None:
+        """Record a first use. Raises AuthError on replay or when the cache is full."""
+        key = (sub, jti)
+        with self._lock:
+            self._evict(now)
+            if key in self._expiry:
+                raise AuthError("invalid_client", "client assertion replayed", 401, f"jti={jti}")
+            if len(self._expiry) >= self.max_entries:
+                raise AuthError(
+                    "temporarily_unavailable",
+                    "replay cache full",
+                    503,
+                    f"{len(self._expiry)} live entries",
+                )
+            self._expiry[key] = expires_at
+            heapq.heappush(self._heap, (expires_at, key))
 
 
 @dataclass
@@ -56,6 +103,7 @@ class AuthzServer:
         default_factory=lambda: ec.generate_private_key(ec.SECP256R1())
     )
     kid: str = field(default_factory=lambda: uuid.uuid4().hex[:16])
+    replay_cache: ReplayCache = field(default_factory=ReplayCache)
 
     def jwks(self) -> dict[str, Any]:
         jwk: dict[str, Any] = json.loads(ECAlgorithm.to_jwk(self.signing_key.public_key()))
@@ -101,7 +149,7 @@ class AuthzServer:
                 key,
                 algorithms=[alg],
                 audience=self.issuer,
-                options={"require": ["sub", "aud", "exp", "iat"]},
+                options={"require": ["sub", "aud", "exp", "iat", "jti"]},
                 leeway=_CLOCK_SKEW,
             )
         except jwt.ExpiredSignatureError as exc:
@@ -124,6 +172,11 @@ class AuthzServer:
                 401,
                 f"exp - iat = {lifetime}s, max {self.max_svid_lifetime}s",
             )
+        jti = claims["jti"]
+        if not isinstance(jti, str) or not 0 < len(jti) <= _MAX_JTI_LENGTH:
+            raise AuthError("invalid_client", "client assertion jti invalid", 401)
+        # RFC 7523 section 3: remember each jti for as long as the assertion would be accepted.
+        self.replay_cache.add(sub, jti, int(claims["exp"]) + _CLOCK_SKEW, time.time())
         return sub
 
     def issue(self, form: dict[str, str]) -> dict[str, Any]:
