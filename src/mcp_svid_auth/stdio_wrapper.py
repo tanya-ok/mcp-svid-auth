@@ -6,7 +6,8 @@ at it. The file is rewritten before each expiry. stdin and stdout are inherited,
 stdio stream flows directly between host and child.
 
 Fail closed: if refresh keeps failing until the token expires, the wrapper deletes the file,
-terminates the child and exits with EXIT_TOKEN_EXPIRED.
+terminates the child and exits with EXIT_TOKEN_EXPIRED. A child still running KILL_GRACE_SECONDS
+after SIGTERM gets SIGKILL.
 
 --export-token-env also sets MCP_ACCESS_TOKEN. That is weaker: the value is visible in the
 process environment to the same UID and is inherited by grandchildren. An environment cannot
@@ -44,6 +45,22 @@ from mcp_svid_auth.spiffe_keys import SvidSource, WorkloadApiSvidSource
 
 TokenFetcher = Callable[[], dict[str, Any]]
 EXIT_TOKEN_EXPIRED = 75  # EX_TEMPFAIL
+KILL_GRACE_SECONDS = 5.0
+
+
+def stop_child(child: subprocess.Popen[bytes], grace: float = KILL_GRACE_SECONDS) -> None:
+    """SIGTERM now, SIGKILL after `grace` seconds if the child is still running. Non-blocking."""
+    if child.poll() is not None:
+        return
+    child.terminate()
+
+    def escalate() -> None:
+        if child.poll() is None:
+            child.kill()
+
+    timer = threading.Timer(grace, escalate)
+    timer.daemon = True
+    timer.start()
 
 
 def write_token(path: Path, token: str) -> None:
@@ -114,6 +131,7 @@ def run_wrapped(
     on_child: Callable[[subprocess.Popen[bytes]], None] = lambda _c: None,
 ) -> int:
     """Run `command` with a refreshed token file. Returns the exit code to use."""
+    kill_grace = KILL_GRACE_SECONDS
     token_dir = Path(tempfile.mkdtemp(prefix="mcp-svid-"))
     child: subprocess.Popen[bytes] | None = None
     env_expiry: threading.Timer | None = None
@@ -128,7 +146,7 @@ def run_wrapped(
             env["MCP_ACCESS_TOKEN"] = token
         child = subprocess.Popen(command, env=env)  # noqa: S603 - operator supplied command
         running = child
-        refresher.on_expired = running.terminate
+        refresher.on_expired = lambda: stop_child(running, kill_grace)
         on_child(running)
         thread = threading.Thread(target=refresher.run, daemon=True)
         thread.start()
@@ -136,7 +154,7 @@ def run_wrapped(
 
             def stop_on_env_expiry() -> None:
                 env_expired.set()
-                running.terminate()
+                stop_child(running, kill_grace)
 
             env_expiry = threading.Timer(
                 max(0.0, refresher.expires_at - time.time()), stop_on_env_expiry
@@ -154,6 +172,11 @@ def run_wrapped(
             env_expiry.cancel()
         if child is not None and child.poll() is None:
             child.terminate()
+            try:
+                child.wait(timeout=kill_grace)
+            except subprocess.TimeoutExpired:
+                child.kill()
+                child.wait()
         for leftover in (refresher.path, refresher.path.with_suffix(".tmp")):
             leftover.unlink(missing_ok=True)
         token_dir.rmdir()

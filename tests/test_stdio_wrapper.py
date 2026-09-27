@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import signal
 import stat
+import subprocess
 import sys
 import tempfile
 import time
@@ -9,7 +11,14 @@ from typing import Any
 
 import pytest
 
-from mcp_svid_auth.stdio_wrapper import EXIT_TOKEN_EXPIRED, Refresher, run_wrapped, write_token
+from mcp_svid_auth import stdio_wrapper
+from mcp_svid_auth.stdio_wrapper import (
+    EXIT_TOKEN_EXPIRED,
+    Refresher,
+    run_wrapped,
+    stop_child,
+    write_token,
+)
 
 
 def _ok() -> dict[str, Any]:
@@ -22,6 +31,7 @@ def _child(code: str) -> list[str]:
 
 @pytest.fixture
 def token_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    monkeypatch.setattr(stdio_wrapper, "KILL_GRACE_SECONDS", 0.5)
     root = tmp_path / "tmp"
     root.mkdir()
     monkeypatch.setattr(tempfile, "tempdir", str(root))
@@ -150,3 +160,55 @@ def test_file_mode_child_outlives_first_token(token_root: Path) -> None:
 
     code = run_wrapped(_child("import time; time.sleep(2)"), fetch, margin=0)
     assert code == 0
+
+
+_IGNORES_SIGTERM = (
+    "import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN);"
+    " print('ready', flush=True); time.sleep(60)"
+)
+
+
+def _expiring_then_down(*, refresh_fails: bool) -> Any:
+    calls = 0
+
+    def fetch() -> dict[str, Any]:
+        nonlocal calls
+        calls += 1
+        if calls > 1 and refresh_fails:
+            raise ConnectionError("authz down")
+        return {"access_token": f"t{calls}", "expires_in": 1}
+
+    return fetch
+
+
+def test_file_mode_kills_child_that_ignores_sigterm(token_root: Path) -> None:
+    started = time.monotonic()
+    code = run_wrapped(
+        _child(_IGNORES_SIGTERM),
+        _expiring_then_down(refresh_fails=True),
+        margin=0,
+    )
+    assert code == EXIT_TOKEN_EXPIRED
+    assert time.monotonic() - started < 15
+    assert list(token_root.iterdir()) == []
+
+
+def test_env_mode_kills_child_that_ignores_sigterm(token_root: Path) -> None:
+    started = time.monotonic()
+    code = run_wrapped(
+        _child(_IGNORES_SIGTERM),
+        _expiring_then_down(refresh_fails=False),
+        export_token_env=True,
+    )
+    assert code == EXIT_TOKEN_EXPIRED
+    assert time.monotonic() - started < 15
+    assert list(token_root.iterdir()) == []
+
+
+def test_stop_child_escalates_to_sigkill() -> None:
+    child = subprocess.Popen(_child(_IGNORES_SIGTERM), stdout=subprocess.PIPE)
+    assert child.stdout is not None
+    assert child.stdout.readline().strip() == b"ready"
+    stop_child(child, grace=0.3)
+    assert child.wait(timeout=10) == -signal.SIGKILL
+    child.stdout.close()

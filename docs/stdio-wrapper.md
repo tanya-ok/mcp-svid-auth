@@ -40,14 +40,14 @@ The child must read the token from `MCP_ACCESS_TOKEN_FILE` before each upstream 
 If refresh keeps failing until the token expires, the wrapper:
 
 1. Deletes the token file.
-2. Terminates the child.
+2. Sends the child SIGTERM, then SIGKILL if it is still running 5 seconds later.
 3. Exits with code 75 (`EX_TEMPFAIL`).
 
 If the first token fetch fails, the child is never started. Otherwise the wrapper exits with the child's exit code.
 
 ## `--export-token-env`
 
-Also sets `MCP_ACCESS_TOKEN` to the first token. A process environment cannot be changed from outside, so the child lives at most one token lifetime: when the exported token expires, the wrapper terminates the child and exits with code 75. The MCP host then starts it again, and the new child gets a fresh token. The token file is still written and refreshed in this mode.
+Also sets `MCP_ACCESS_TOKEN` to the first token. A process environment cannot be changed from outside, so the child lives at most one token lifetime: when the exported token expires, the wrapper terminates the child (SIGKILL after the same 5 second grace) and exits with code 75. The MCP host then starts it again, and the new child gets a fresh token. The token file is still written and refreshed in this mode.
 
 | Property | Token file (default) | `--export-token-env` |
 |---|---|---|
