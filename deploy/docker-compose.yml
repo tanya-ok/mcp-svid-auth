@@ -6,7 +6,7 @@ x-workload: &workload
     context: ..
     dockerfile: deploy/Dockerfile
   image: mcp-svid-auth:local
-  # Shared PID namespace so the agent's unix attestor can inspect workload processes.
+  # Shared PID namespace so the agent sees workload PIDs and can map them to containers.
   pid: "service:spire-agent"
   volumes:
     - spire-sockets:/run/spire/sockets:ro
@@ -38,10 +38,13 @@ services:
       - "/opt/spire/conf/agent/agent.conf"
       - "-joinToken"
       - "${JOIN_TOKEN:-set-by-demo-sh}"
-    # Root so the unix attestor can read /proc of workloads running under other UIDs.
+    # Root to read the Docker socket and /proc of workloads running under other UIDs.
     user: "0"
     volumes:
       - ./spire/agent.conf:/opt/spire/conf/agent/agent.conf:ro
+      # The docker attestor inspects containers to read labels. ":ro" only stops the file being
+      # replaced; the API behind it is full access. See docs/security.md.
+      - /var/run/docker.sock:/var/run/docker.sock:ro
       - ./.data/bundle.pem:/opt/spire/bootstrap/bundle.pem:ro
       - spire-sockets:/run/spire/sockets
     depends_on:
@@ -50,6 +53,8 @@ services:
 
   authz:
     <<: *workload
+    labels:
+      org.example.svid.workload: authz
     user: "1010"
     command:
       - mcp-svid-authz
@@ -60,6 +65,8 @@ services:
 
   notes-a:
     <<: *workload
+    labels:
+      org.example.svid.workload: notes-a
     user: "1011"
     command:
       - mcp-svid-notes
@@ -72,6 +79,8 @@ services:
 
   notes-b:
     <<: *workload
+    labels:
+      org.example.svid.workload: notes-b
     user: "1012"
     command:
       - mcp-svid-notes
@@ -84,12 +93,16 @@ services:
 
   agent-research:
     <<: *workload
+    labels:
+      org.example.svid.workload: agent-research
     user: "1001"
     profiles: [agents]
     entrypoint: ["mcp-svid-agent"]
 
   agent-intruder:
     <<: *workload
+    labels:
+      org.example.svid.workload: agent-intruder
     user: "1002"
     profiles: [agents]
     entrypoint: ["mcp-svid-agent"]
