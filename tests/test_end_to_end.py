@@ -131,7 +131,17 @@ async def test_scope_enforced_per_tool(world_factory: Any) -> None:
         ("notes.write", "deny"),
     ]
     assert lines[1]["reason"] == "insufficient_scope: needs notes:write"
-    assert set(lines[1]) == {"timestamp", "component", "spiffe_id", "tool", "decision", "reason"}
+    assert set(lines[1]) == {
+        "record_id",
+        "parent_record_id",
+        "prev_hash",
+        "timestamp",
+        "component",
+        "spiffe_id",
+        "tool",
+        "decision",
+        "reason",
+    }
 
 
 async def test_protected_resource_metadata(world_factory: Any) -> None:

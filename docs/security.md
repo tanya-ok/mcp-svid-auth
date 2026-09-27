@@ -112,6 +112,7 @@ Residual risk in `allow-reuse-within-lifetime`: a JWT-SVID stolen from the agent
 | JWT-SVID reuse allowed in the demo | `allow-reuse-within-lifetime`: a stolen SVID mints tokens until it expires (max 300s). Needed because the SPIRE 1.15.3 agent re-serves cached SVIDs. | `deploy/docker-compose.yml` |
 | JWT-SVID seen-set per process | `reject` mode only. Replicas or a restart forget seen `jti` values. | `ReplayCache` |
 | Signing key in memory | Rotates only on restart. | `AuthzServer.signing_key` |
+| Audit chain not anchored | Edits, deletions and reordering are detected, but a writer with file access can rebuild the chain after an edit. No signing or external anchor. | `audit.py` |
 | Plain HTTP | No TLS inside the compose network. The demo agents run with `--allow-http --allow-private-network`. | `deploy/docker-compose.yml`, `deploy/demo.sh` |
 | DNS rebinding | The URL check and the HTTP client resolve the host separately. A name that changes answer between the two lookups can still reach a private address. | `agent_client.UrlPolicy` |
 

@@ -51,7 +51,7 @@ In each run the agent calls `notes.search` and then `notes.write`, and prints on
 Audit line format:
 
 ```json
-{"timestamp":"2026-09-26T18:07:11.742+00:00","component":"mcp_server:notes-b","spiffe_id":"spiffe://example.org/agent/research","tool":"notes.write","decision":"deny","reason":"insufficient_scope: needs notes:write"}
+{"record_id":"5f0c9a53-2a8e-4d0b-9a57-0f3e2f6d1c44","parent_record_id":"b1d7e0a2-6c1f-4e89-8f0e-2d4c7a9b3e51","prev_hash":"3b9f0c2e8d7a41f6b5e0c9d8a7f6e5d4c3b2a1908f7e6d5c4b3a29180f7e6d5c","timestamp":"2026-09-26T18:07:11.742+00:00","component":"mcp_server:notes-b","spiffe_id":"spiffe://example.org/agent/research","tool":"notes.write","decision":"deny","reason":"insufficient_scope: needs notes:write"}
 ```
 
 ## Offline equivalents
@@ -69,4 +69,5 @@ The same behaviour is covered without SPIRE in `tests/`, using `LocalSvidIssuer`
 | `test_authz_replay.py` | `--svid-replay` modes: `jti` required and single use in `reject`, reuse and missing `jti` accepted in `allow-reuse-within-lifetime`, malformed `jti` refused in both, full cache fails closed, demo sets the mode explicitly |
 | `test_issuer_allowlist.py` | Trusted issuer allowlist: unknown and lookalike issuers refused before any SVID fetch, refusal event |
 | `test_url_policy.py` | Discovery URL checks: https only, private, loopback and link-local addresses refused for the resource, issuer, token endpoint and tool call, dev flags |
+| `test_audit_chain.py` | Audit hash chain: links, resume across writers, edited, deleted, reordered and truncated lines detected, verify command |
 | `test_no_identifiers.py` | Optional anonymization denylist |

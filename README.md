@@ -27,7 +27,7 @@ MCP client configs often hold long-lived static keys:
 | Tokens are bound to one MCP server via the RFC 8707 `resource` parameter | `authz.py`, `policy.py` |
 | A token issued for server A is rejected by server B | `mcp_server.py`, `test_token_for_a_is_rejected_by_b` |
 | Scopes are enforced per tool, with a 403 `insufficient_scope` challenge. Tools without a declared scope are denied. | `ToolScopeGuard`, `build_mcp` |
-| Every decision is written as one JSON audit line with the SPIFFE ID | `audit.py` |
+| Every decision is written as one hash-chained JSON audit line with the SPIFFE ID; `mcp-svid-audit-verify` detects edits | `audit.py` |
 | The MCP server never forwards the incoming token | `mcp_server.py` makes no outbound call with it |
 | A stdio MCP server can start with a refreshed short-lived token instead of a static key | `stdio_wrapper.py` |
 
@@ -114,7 +114,7 @@ Optional local anonymization denylist: put one term per line in `tests/denylist.
 Audit line example:
 
 ```json
-{"timestamp":"2026-09-26T18:07:11.742+00:00","component":"mcp_server:notes-b","spiffe_id":"spiffe://example.org/agent/research","tool":"notes.write","decision":"deny","reason":"insufficient_scope: needs notes:write"}
+{"record_id":"5f0c9a53-2a8e-4d0b-9a57-0f3e2f6d1c44","parent_record_id":"b1d7e0a2-6c1f-4e89-8f0e-2d4c7a9b3e51","prev_hash":"3b9f0c2e8d7a41f6b5e0c9d8a7f6e5d4c3b2a1908f7e6d5c4b3a29180f7e6d5c","timestamp":"2026-09-26T18:07:11.742+00:00","component":"mcp_server:notes-b","spiffe_id":"spiffe://example.org/agent/research","tool":"notes.write","decision":"deny","reason":"insufficient_scope: needs notes:write"}
 ```
 
 Denials before the signature check prefix the SPIFFE ID with `unverified:`.

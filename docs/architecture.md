@@ -32,7 +32,7 @@ flowchart LR
 | `agent_client` | `mcp-svid-agent` | Discovers the authorization server, refuses it unless it is on the `--trusted-issuer` allowlist, fetches its SVID, gets a token, calls tools. Refuses non-https and non-public URLs unless relaxed for dev. `--steal-token` replays a token against another server. |
 | `stdio_wrapper` | `mcp-svid-stdio` | Starts a local stdio MCP server with a refreshed token file. See [stdio wrapper](stdio-wrapper.md). |
 | `policy` | none | Allowlist of SPIFFE ID, resource and scopes. |
-| `audit` | none | One JSON line per decision, to a file or stderr. |
+| `audit` | `mcp-svid-audit-verify` | One hash-chained JSON line per decision, to a file or stderr, and the chain verifier. |
 | `spiffe_keys` | none | JWT-SVID source and key resolver: Workload API, or a static JWKS for tests. |
 | `deploy/` | `make demo` | SPIRE server and agent 1.15.3, registration entries, the three services, four scenarios. |
 
@@ -116,11 +116,14 @@ The authz signing key is a P-256 key generated in memory at start. It rotates on
 Every allow and deny decision in authz and the MCP servers is one JSON line:
 
 ```json
-{"timestamp":"2026-09-26T18:07:11.742+00:00","component":"mcp_server:notes-b","spiffe_id":"spiffe://example.org/agent/research","tool":"notes.write","decision":"deny","reason":"insufficient_scope: needs notes:write"}
+{"record_id":"5f0c9a53-2a8e-4d0b-9a57-0f3e2f6d1c44","parent_record_id":"b1d7e0a2-6c1f-4e89-8f0e-2d4c7a9b3e51","prev_hash":"3b9f0c2e8d7a41f6b5e0c9d8a7f6e5d4c3b2a1908f7e6d5c4b3a29180f7e6d5c","timestamp":"2026-09-26T18:07:11.742+00:00","component":"mcp_server:notes-b","spiffe_id":"spiffe://example.org/agent/research","tool":"notes.write","decision":"deny","reason":"insufficient_scope: needs notes:write"}
 ```
 
 | Field | Content |
 |---|---|
+| `record_id` | random UUIDv4 |
+| `parent_record_id` | `record_id` of the previous line in the same file, `null` for the first |
+| `prev_hash` | SHA-256, lowercase hex, of the previous line in RFC 8785 (JCS) form, `null` for the first |
 | `component` | `authz` or `mcp_server:<name>` |
 | `spiffe_id` | caller, prefixed with `unverified:` when the decision was made before the signature check, `null` when unknown |
 | `tool` | tool name for `tools/call`, else `null` |
@@ -128,3 +131,15 @@ Every allow and deny decision in authz and the MCP servers is one JSON line:
 | `reason` | OAuth error code and fixed description, plus audit-only detail |
 
 Without `--audit-log` the lines go to stderr.
+
+### Hash chain
+
+Each file is one chain, built as in [draft-sharif-agent-audit-trail-05](https://datatracker.ietf.org/doc/draft-sharif-agent-audit-trail/) (checked 2026-09-27): `prev_hash(N) = hex(SHA-256(JCS(record N-1)))`, and `parent_record_id` links to the previous `record_id`. The field set is this project's own, not the full AAT record. A process that opens an existing file continues its chain from the last line, and refuses to write if that line does not parse. One writer per file.
+
+```sh
+mcp-svid-audit-verify authz.jsonl notes-a.jsonl
+```
+
+The verifier recomputes every link and reports edited, deleted, reordered or inserted lines and timestamps that go backwards. Exit code 0 means every chain is intact.
+
+The chain is tamper-evident, not tamper-proof: anyone who can write the file can rewrite the whole chain from the edited line on. Anchoring the last hash elsewhere, or signing records, is not implemented.

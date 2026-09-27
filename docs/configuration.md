@@ -94,6 +94,20 @@ Fixed values:
 |---|---|
 | Exit code when the token cannot be refreshed | 75 |
 
+## `mcp-svid-audit-verify`
+
+Verify the hash chain of audit log files written with --audit-log
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `files` | required | Audit log files, one chain each |
+
+Fixed values:
+
+| Setting | Value |
+|---|---|
+| Chain | `prev_hash` = SHA-256 of the JCS form of the previous record, hex |
+
 ## Policy file
 
 Example from `deploy/policy.yaml`:

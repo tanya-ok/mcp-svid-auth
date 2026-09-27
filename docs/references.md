@@ -14,3 +14,5 @@
 | [SPIRE](https://spiffe.io/docs/latest/spire-about/) | SPIFFE implementation used by the demo (1.15.3) |
 | [py-spiffe](https://github.com/HewlettPackard/py-spiffe) | Python Workload API client (`spiffe` package) |
 | [Model Context Protocol Python SDK](https://github.com/modelcontextprotocol/python-sdk) | MCP server and client (`mcp` 2.x) |
+| [draft-sharif-agent-audit-trail](https://datatracker.ietf.org/doc/draft-sharif-agent-audit-trail/) | Audit hash chain construction (`prev_hash`, `parent_record_id`, JCS plus SHA-256). Checked against -05. |
+| [RFC 8785: JSON Canonicalization Scheme](https://www.rfc-editor.org/rfc/rfc8785) | Canonical form hashed in the audit chain |
