@@ -7,10 +7,13 @@ RFC 8707. Access tokens follow the RFC 9068 JWT profile.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import hashlib
 import heapq
 import json
+import os
 import re
+import select
 import signal
 import threading
 import time
@@ -343,13 +346,61 @@ def _digest(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def install_policy_reload(server: AuthzServer, poll_seconds: float) -> threading.Event:
+@dataclass
+class PolicyReloader:
+    """Runs policy reloads on a worker thread; the SIGHUP handler only writes one byte to a pipe.
+
+    The handler takes no lock and never calls into the audit log, so a signal that lands while
+    the main thread holds the audit or reload lock cannot deadlock it.
+    """
+
+    server: AuthzServer
+    poll_seconds: float
+    _read_fd: int = -1
+    _write_fd: int = -1
+    _stopped: bool = False
+    _thread: threading.Thread | None = None
+
+    def start(self) -> None:
+        self._read_fd, self._write_fd = os.pipe()
+        os.set_blocking(self._write_fd, False)
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+
+    def request(self) -> None:
+        """Async-signal-safe: one non-blocking write, no locks."""
+        with contextlib.suppress(OSError):  # a full pipe means a reload is already pending
+            os.write(self._write_fd, b"r")
+
+    def stop(self, timeout: float = 2.0) -> None:
+        self._stopped = True
+        self.request()
+        if self._thread is not None:
+            self._thread.join(timeout)
+
+    def _run(self) -> None:
+        timeout = self.poll_seconds if self.poll_seconds > 0 else None
+        try:
+            while not self._stopped:
+                readable, _, _ = select.select([self._read_fd], [], [], timeout)
+                if self._stopped:
+                    return
+                if readable:
+                    os.read(self._read_fd, 4096)
+                    self.server.reload_policy(force=True)
+                else:
+                    self.server.reload_policy()
+        finally:
+            os.close(self._read_fd)
+            os.close(self._write_fd)
+
+
+def install_policy_reload(server: AuthzServer, poll_seconds: float) -> PolicyReloader:
     """Reload on SIGHUP and, if `poll_seconds` > 0, when the file content changes."""
-    signal.signal(signal.SIGHUP, lambda _s, _f: server.reload_policy(force=True))
-    stop = threading.Event()
-    if poll_seconds > 0:
-        threading.Thread(target=server.watch_policy, args=(poll_seconds, stop), daemon=True).start()
-    return stop
+    reloader = PolicyReloader(server, poll_seconds)
+    reloader.start()
+    signal.signal(signal.SIGHUP, lambda _s, _f: reloader.request())
+    return reloader
 
 
 def parse_scope(raw: str | None) -> set[str]:

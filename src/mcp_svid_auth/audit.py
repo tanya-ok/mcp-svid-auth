@@ -6,7 +6,8 @@ hex(SHA-256(JCS(previous record as stored))). The genesis record has both set to
 field set is this project's own, not the full AAT record.
 
 One writer per file. A writer that opens an existing file continues its chain from the last
-line and refuses to write if that line does not parse.
+line and refuses to write, on every attempt, while that line does not parse or lacks its
+trailing newline.
 """
 
 from __future__ import annotations
@@ -79,21 +80,26 @@ class AuditLog:
         return entry
 
     def _load_tail(self) -> None:
+        # Marked loaded only after a clean parse, so a corrupt tail fails every write.
         if self._loaded:
             return
-        self._loaded = True
         if self.path is None or not self.path.exists():
+            self._loaded = True
             return
-        lines = self.path.read_text(encoding="utf-8").splitlines()
-        if not lines:
+        data = self.path.read_text(encoding="utf-8")
+        if not data:
+            self._loaded = True
             return
+        if not data.endswith("\n"):
+            raise AuditChainError(f"{self.path}: last line is incomplete")
         try:
-            last = json.loads(lines[-1])
+            last = json.loads(data.splitlines()[-1])
         except ValueError as exc:
             raise AuditChainError(f"{self.path}: last line is not JSON") from exc
         if not isinstance(last, dict) or not isinstance(last.get("record_id"), str):
             raise AuditChainError(f"{self.path}: last line is not a chained record")
         self._last = last
+        self._loaded = True
 
 
 def verify_lines(lines: Iterable[str]) -> tuple[int, list[str]]:

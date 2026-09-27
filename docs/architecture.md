@@ -79,7 +79,7 @@ sequenceDiagram
 
 Steps on the agent side (`agent_client.fetch_access_token`):
 
-0. Before each request, check the URL: `https` only, and every address the host resolves to must be public (not private, loopback, link-local, shared or multicast). A failing URL is refused with `url_refused` and nothing is sent to it. This applies to the resource, the chosen issuer, the `token_endpoint` from the issuer metadata, and the tool call. `--allow-http` and `--allow-private-network` relax the two checks for local and compose setups.
+0. Before each request, check the URL: `https` only, and every address the host resolves to must be public (not private, loopback, link-local, shared or multicast). A failing URL is refused with `url_refused` and nothing is sent to it. This applies to the resource, the chosen issuer, the `token_endpoint` from the issuer metadata, and the tool call. IPv6 addresses that embed an IPv4 address (IPv4-mapped, IPv4-compatible, NAT64 `64:ff9b::/96`) are judged by the embedded address, and site-local `fec0::/10` is refused. `--allow-http` and `--allow-private-network` relax the two checks for local and compose setups; either one emits a `url_policy_relaxed` event on stderr at startup.
 1. Read Protected Resource Metadata. Fail if its `resource` differs from the requested one.
 2. Take the first entry of `authorization_servers` that is on the `--trusted-issuer` allowlist. Refuse with `issuer_refused` if there is none. Comparison is exact after lowercasing scheme and host, dropping the default port and mapping an empty path to `/` (RFC 8414 section 2, RFC 9728 section 3). No prefix match; `/t` and `/t/` differ.
 3. Read that authorization server's metadata. Fail if its `issuer` differs.
@@ -138,12 +138,12 @@ Without `--audit-log` the lines go to stderr.
 
 ### Hash chain
 
-Each file is one chain, built as in [draft-sharif-agent-audit-trail-05](https://datatracker.ietf.org/doc/draft-sharif-agent-audit-trail/) (checked 2026-09-27): `prev_hash(N) = hex(SHA-256(JCS(record N-1)))`, and `parent_record_id` links to the previous `record_id`. The field set is this project's own, not the full AAT record. A process that opens an existing file continues its chain from the last line, and refuses to write if that line does not parse. One writer per file.
+Each file is one chain, built as in [draft-sharif-agent-audit-trail-05](https://datatracker.ietf.org/doc/draft-sharif-agent-audit-trail/) (checked 2026-09-27): `prev_hash(N) = hex(SHA-256(JCS(record N-1)))`, and `parent_record_id` links to the previous `record_id`. The field set is this project's own, not the full AAT record. A process that opens an existing file continues its chain from the last line, and refuses every write while that line does not parse or lacks its trailing newline. One writer per file.
 
 ```sh
 mcp-svid-audit-verify authz.jsonl notes-a.jsonl
 ```
 
-The verifier recomputes every link and reports edited, deleted, reordered or inserted lines and timestamps that go backwards. Exit code 0 means every chain is intact.
+The verifier recomputes every link and reports edited, deleted, reordered or inserted lines and timestamps that go backwards. Exit code 0 means every chain is intact. Deleting lines from the end of a file (tail truncation) is not detected, because the chain has no external anchor for its last record.
 
-The chain is tamper-evident, not tamper-proof: anyone who can write the file can rewrite the whole chain from the edited line on. Anchoring the last hash elsewhere, or signing records, is not implemented.
+The chain is tamper-evident, not tamper-proof: anyone who can write the file can rewrite the whole chain from the edited line on. Anchoring the last hash elsewhere, or signing records, is not implemented, so truncation from the end goes unnoticed.

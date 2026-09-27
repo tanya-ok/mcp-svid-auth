@@ -101,6 +101,7 @@ Fixed values:
 | Setting | Value |
 |---|---|
 | Exit code when the token cannot be refreshed | 75 |
+| Grace between SIGTERM and SIGKILL for the child on expiry | 5s |
 
 ## `mcp-svid-audit-verify`
 

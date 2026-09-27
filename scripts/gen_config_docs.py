@@ -154,7 +154,13 @@ def generate() -> str:
     lines += _command(agent_client.build_parser(), [])
     lines += _command(
         stdio_wrapper.build_parser(),
-        [("Exit code when the token cannot be refreshed", str(stdio_wrapper.EXIT_TOKEN_EXPIRED))],
+        [
+            ("Exit code when the token cannot be refreshed", str(stdio_wrapper.EXIT_TOKEN_EXPIRED)),
+            (
+                "Grace between SIGTERM and SIGKILL for the child on expiry",
+                f"{stdio_wrapper.KILL_GRACE_SECONDS:g}s",
+            ),
+        ],
     )
     lines += _command(
         audit.build_parser(),

@@ -27,7 +27,7 @@ MCP client configs often hold long-lived static keys:
 | Tokens are bound to one MCP server via the RFC 8707 `resource` parameter | `authz.py`, `policy.py` |
 | A token issued for server A is rejected by server B | `mcp_server.py`, `test_token_for_a_is_rejected_by_b` |
 | Scopes are enforced per tool, with a 403 `insufficient_scope` challenge. Tools without a declared scope are denied. | `ToolScopeGuard`, `build_mcp` |
-| Every decision is written as one hash-chained JSON audit line with the SPIFFE ID; `mcp-svid-audit-verify` detects edits | `audit.py` |
+| Every decision is written as one hash-chained JSON audit line with the SPIFFE ID; `mcp-svid-audit-verify` detects edits, but not deletion of lines from the end | `audit.py` |
 | The MCP server never forwards the incoming token. With an upstream it uses its own token | `Upstream` in `mcp_server.py`, `test_no_passthrough.py` |
 | A stdio MCP server can start with a refreshed short-lived token instead of a static key | `stdio_wrapper.py` |
 

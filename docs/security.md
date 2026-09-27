@@ -13,7 +13,7 @@ The table below is the short view. [Threat model (STPA-Sec)](threat-model.md) de
 | Token replay to another server | `aud` bound to one resource. Each server checks `aud` equals its own URI. | None within one issuer. |
 | JWT-SVID replay to authz | SVID `aud` must be the issuer only. 5 min TTL. Default `--svid-replay reject`: `jti` required, each `(sub, jti)` accepted once. | The compose demo runs `allow-reuse-within-lifetime` because the SPIRE 1.15.3 agent re-serves cached SVIDs; there a stolen SVID mints tokens until it expires. In `reject` mode the seen-set is in memory and per process, and a stolen, unused SVID still works once. |
 | SVID harvesting by a malicious resource | The agent mints SVIDs only for issuers on its `--trusted-issuer` allowlist. An issuer named in Protected Resource Metadata that is not on the list is refused, and logged as `issuer_refused`, before any request to it and before any SVID fetch. Exact match after scheme, host and default port normalization; no prefix match. | The allowlist is per process, not per resource. |
-| Discovery SSRF | Every URL the agent fetches or sends a credential to (resource, issuer, `token_endpoint`, tool call) must be `https` and resolve only to public addresses. Refused URLs are logged as `url_refused` and get no request. | `--allow-http` and `--allow-private-network` turn the checks off for dev; the compose demo needs both. The check resolves the host itself and the HTTP client resolves it again, so DNS rebinding between the two lookups is not covered. |
+| Discovery SSRF | Every URL the agent fetches or sends a credential to (resource, issuer, `token_endpoint`, tool call) must be `https` and resolve only to public addresses. Refused URLs are logged as `url_refused` and get no request. | `--allow-http` and `--allow-private-network` turn the checks off for dev and log `url_policy_relaxed` on stderr at startup; the compose demo needs both. The check resolves the host itself and the HTTP client resolves it again, so DNS rebinding between the two lookups is not covered. |
 | Workload impersonation | SPIRE docker attestor. Identity is bound to a container label, not a UID. | Anyone who can start a container with a registered label on that host gets that identity. |
 | Over-broad access | Allowlist per SPIFFE ID, resource and scope. Per-tool scope check. Policy reloaded on SIGHUP or file change. | Policy is a local file. No versioning or review flow. Issued tokens outlive a revoked grant by up to 300s. |
 | Confused deputy | Server never forwards the incoming token. An upstream call uses the server's own SVID-based token (`notes.search_upstream`), tested in `test_no_passthrough.py`. | No delegation chain: the upstream sees the relay, not the original caller. |
@@ -110,7 +110,7 @@ Time to denial after a grant is removed:
 | Granted scopes include the tool scope | 403 `insufficient_scope` with `WWW-Authenticate` | Per-tool least privilege |
 | `tools/list` shows only tools whose scope was granted | tool omitted | A read-only token does not see `notes.write` |
 | A `tools/call` still running at the token `exp` | 401 `invalid_token`, audit `token_expired_during_call` | No tool result is returned on an expired token |
-| `notes.write` re-checks the token `exp` just before it stores | Tool error `access token expired`, nothing stored | A state change never happens after the token expired, even if the call started before |
+| `notes.write` re-checks the token `exp` just before it stores | Tool error `access token expired`, nothing stored | `notes.write` does not store after the token expired, apart from the short window between the check and the write. Other async tools may keep running after the 401, since the server is stateless and does not cancel them |
 
 `build_mcp` also refuses to start if any registered tool has no declared scope.
 
@@ -131,7 +131,8 @@ Time to denial after a grant is removed:
 | JWT-SVID reuse allowed in the demo | `allow-reuse-within-lifetime`: a stolen SVID mints tokens until it expires (max 300s). Needed because the SPIRE 1.15.3 agent re-serves cached SVIDs. | `deploy/docker-compose.yml` |
 | JWT-SVID seen-set per process | `reject` mode only. Replicas or a restart forget seen `jti` values. | `ReplayCache` |
 | Signing key in memory | Rotates only on restart. | `AuthzServer.signing_key` |
-| Audit chain not anchored | Edits, deletions and reordering are detected, but a writer with file access can rebuild the chain after an edit. No signing or external anchor. | `audit.py` |
+| Audit chain not anchored | Edits, deletions inside the file and reordering are detected, but deleting lines from the end (tail truncation) is not, and a writer with file access can rebuild the chain after an edit. No signing or external anchor. | `audit.py` |
+| Upstream widens read access | `notes.search_upstream` on notes-a lets any caller with `notes:read` on notes-a read notes-b under notes-a's own grant, even without a notes-b grant (confused deputy widening). Fix pending a delegation chain. | `mcp_server.Upstream` |
 | Plain HTTP | No TLS inside the compose network. The demo agents run with `--allow-http --allow-private-network`. | `deploy/docker-compose.yml`, `deploy/demo.sh` |
 | DNS rebinding | The URL check and the HTTP client resolve the host separately. A name that changes answer between the two lookups can still reach a private address. | `agent_client.UrlPolicy` |
 
