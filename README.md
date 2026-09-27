@@ -126,7 +126,7 @@ Denials before the signature check prefix the SPIFFE ID with `unverified:`.
 | Static key leak | No static keys. SVID and access token both live 5 min. | A stolen access token works until expiry. |
 | Token replay to another server | `aud` bound to one resource. Each server checks `aud` equals its own URI. | None within one issuer. |
 | JWT-SVID replay to authz | SVID `aud` must be the issuer only. 5 min TTL. | No `jti` tracking. A stolen SVID can mint tokens for its whole lifetime. |
-| Workload impersonation | SPIRE attestation. | Unix attestor is UID based. Any process under a registered UID gets that identity. |
+| Workload impersonation | SPIRE docker attestor. Identity is bound to a container label, not a UID. | Anyone who can start a container with a registered label on that host gets that identity. |
 | Over-broad access | Allowlist per SPIFFE ID, resource and scope. Per-tool scope check. | Policy is a local file. No versioning or review flow. |
 | Confused deputy | Server never forwards the incoming token. | No delegation chain for downstream calls. |
 | Algorithm confusion | SVIDs: asymmetric algorithms only, `alg=none` rejected. Access tokens: ES256 only, `typ` `at+jwt`. Key selected by `kid` from a trusted key set. | |
@@ -139,7 +139,7 @@ Denials before the signature check prefix the SPIFFE ID with `unverified:`.
 - Not a replacement for an MCP gateway such as agentgateway. It shows the token flow a gateway could implement.
 - No user delegation. The agent acts as itself (`client_credentials`). No token exchange or `act` claim chain yet.
 - No X.509-SVID or WIT-SVID client authentication. JWT-SVID only.
-- The compose stack uses the unix attestor with a shared PID namespace. It is weak and fits a single-host demo only.
+- The compose stack uses the docker attestor with label selectors, a shared PID namespace and the Docker socket mounted into the SPIRE agent. It fits a single-host demo only. See [docs/security.md](docs/security.md#docker-socket-exposure).
 - No async JWKS fetch and no refetch on unknown `kid`. The MCP server caches the authz JWKS for 60s with a blocking fetch.
 - No client-side issuer allowlist. The agent trusts the authorization server named in Protected Resource Metadata.
 - No `jti` replay tracking for JWT-SVIDs or access tokens.
@@ -150,7 +150,7 @@ Denials before the signature check prefix the SPIFFE ID with `unverified:`.
 | Item | State |
 |---|---|
 | Offline tests | Pass (`make check`) |
-| `make demo` against SPIRE 1.15.3 | Pass on 2026-09-26, Docker Desktop on macOS. All four scenarios behave as in the table above. |
+| `make demo` against SPIRE 1.15.3 | Pass on 2026-09-27 with the docker workload attestor (label selectors), Docker Desktop 29.6.1 on macOS, cgroup v2. All four scenarios behave as in the table above. A container with an unregistered label, or none, gets `PERMISSION_DENIED` from the Workload API. |
 | stdio wrapper | Minimal. Children must re-read `MCP_ACCESS_TOKEN_FILE` per upstream call. |
 
 ## License

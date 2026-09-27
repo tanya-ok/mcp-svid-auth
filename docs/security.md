@@ -10,7 +10,7 @@
 | Static key leak | No static keys. SVID and access token both live 5 min. | A stolen access token works until expiry. |
 | Token replay to another server | `aud` bound to one resource. Each server checks `aud` equals its own URI. | None within one issuer. |
 | JWT-SVID replay to authz | SVID `aud` must be the issuer only. 5 min TTL. | No `jti` tracking. A stolen SVID can mint tokens for its whole lifetime. |
-| Workload impersonation | SPIRE attestation. | Unix attestor is UID based. Any process under a registered UID gets that identity. |
+| Workload impersonation | SPIRE docker attestor. Identity is bound to a container label, not a UID. | Anyone who can start a container with a registered label on that host gets that identity. |
 | Over-broad access | Allowlist per SPIFFE ID, resource and scope. Per-tool scope check. | Policy is a local file. No versioning or review flow. |
 | Confused deputy | Server never forwards the incoming token. | No delegation chain for downstream calls. |
 | Algorithm confusion | SVIDs: asymmetric algorithms only, `alg=none` rejected. Access tokens: ES256 only, `typ` `at+jwt`. Key selected by `kid` from a trusted key set. | None known. |
@@ -70,10 +70,33 @@ Error descriptions returned to the client are fixed strings. Exception details g
 
 | Gap | Effect | Where |
 |---|---|---|
-| Unix workload attestor | UID based. Any process under a registered UID gets that identity. The compose stack shares the SPIRE agent PID namespace. Fits a single-host demo only. | `deploy/spire/agent.conf`, `deploy/docker-compose.yml` |
+| Docker socket in the SPIRE agent | Full Docker API access for the agent container. See [Docker socket exposure](#docker-socket-exposure). | `deploy/docker-compose.yml` |
+| Label selectors | Anyone who can start a container with a registered label on the host gets that identity. Fits a single-host demo only. | `deploy/register.sh` |
 | No `jti` replay tracking | A stolen JWT-SVID or access token is usable until it expires (5 min). | `authz.py`, `mcp_server.py` |
 | No JWKS refetch on unknown `kid` | The MCP server caches the authz JWKS for 60s with a blocking fetch. A restarted authz is unknown for up to 60s. | `JwksFetcher` |
 | No client-side issuer allowlist | The agent trusts the authorization server named in Protected Resource Metadata. A malicious server could point it at another issuer; the SVID `aud` then names that issuer. | `agent_client.discover` |
 | No `tools/list` filtering | Every caller sees all tools. The scope check applies at `tools/call`. | `ToolScopeGuard` |
 | Signing key in memory | Rotates only on restart. | `AuthzServer.signing_key` |
 | Plain HTTP | No TLS inside the compose network. | `deploy/docker-compose.yml` |
+
+## Docker socket exposure
+
+The SPIRE agent uses the `docker` workload attestor. For each Workload API call it maps the caller PID to a container ID through `/proc`, then inspects that container over the Docker API to read its labels. Registration entries select on `docker:label:org.example.svid.workload:<name>`.
+
+What this needs, and nothing more:
+
+| Requirement | Why | Trade-off |
+|---|---|---|
+| `/var/run/docker.sock` mounted into `spire-agent` | Container inspect to read labels | The Docker API has no read-only mode. `:ro` on the mount only stops the socket file being replaced. A process that controls the agent container controls the Docker daemon, which is root on the host (or on the Docker Desktop VM). |
+| Workloads join the agent PID namespace (`pid: service:spire-agent`) | The agent must see the caller PID in `/proc` | Workloads can see each other's processes. |
+| Agent runs as root | Read the socket and `/proc` of workloads under other UIDs | Root inside the agent container. |
+
+Not needed: `cgroup: host`. With cgroup v2 on Docker Desktop, the default container locator resolves container IDs without it (tested 2026-09-27).
+
+Compared with the unix attestor used before: a process running under a registered UID no longer gets an identity. The identity now follows the container label. The cost is the Docker socket in the agent. Anyone who can already start containers on the host can still claim any label, so the host Docker daemon is the trust boundary.
+
+Options to narrow the exposure, not implemented here:
+
+- A socket proxy in front of the daemon that allows only `GET /containers/{id}/json`.
+- `docker:image_config_digest` selectors next to the label, so a label alone is not enough.
+- The Kubernetes (`k8s`) attestor on a real cluster, where the kubelet API replaces the Docker socket.

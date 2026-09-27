@@ -8,7 +8,7 @@ Report a vulnerability privately to the repository owner through GitHub private 
 
 ## Known limitations
 
-- Unix workload attestor is UID based.
+- The SPIRE agent uses the docker workload attestor and has the Docker socket mounted. The Docker API has no read-only mode. See `docs/security.md`.
 - JWT-SVIDs are not tracked by `jti`. A stolen SVID is usable until it expires.
 - The authz signing key lives in memory and rotates only on restart.
 - Services talk plain HTTP inside the compose network.
