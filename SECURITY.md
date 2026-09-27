@@ -9,9 +9,8 @@ Report a vulnerability privately to the repository owner through GitHub private 
 ## Known limitations
 
 - The SPIRE agent uses the docker workload attestor and has the Docker socket mounted. The Docker API has no read-only mode. See `docs/security.md`.
-- JWT-SVIDs are not tracked by `jti`. A stolen SVID is usable until it expires.
+- JWT-SVID replay: authz defaults to `--svid-replay reject` (each `jti` once), but the compose demo runs `allow-reuse-within-lifetime` because the SPIRE 1.15.3 agent re-serves cached SVIDs. There a stolen SVID is usable until it expires. Access tokens are not tracked by `jti`.
 - The authz signing key lives in memory and rotates only on restart.
 - Services talk plain HTTP inside the compose network.
-- No `tools/list` filtering, no client-side issuer allowlist, no JWKS refetch on unknown `kid`.
 
-See the threat model table in [README.md](README.md).
+See the threat model table in [README.md](README.md) and the STPA-Sec analysis in `docs/threat-model.md`.
