@@ -21,6 +21,7 @@ JWT-SVID to access token bridge (POC)
 | `--socket` | none | Workload API socket for JWT bundles, default SPIFFE_ENDPOINT_SOCKET |
 | `--audit-log` | none | Audit log file (JSON lines, appended), default stderr |
 | `--max-svid-lifetime` | `300` | Reject JWT-SVIDs whose exp - iat exceeds this many seconds |
+| `--svid-replay` | `reject` | Reject: require a JWT-SVID jti and accept each (sub, jti) once; allow-reuse-within-lifetime: jti optional, a reused SVID is accepted until it expires |
 
 Fixed values:
 

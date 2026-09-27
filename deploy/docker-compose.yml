@@ -62,6 +62,10 @@ services:
       - --policy=/app/deploy/policy.yaml
       - --host=0.0.0.0
       - --port=8100
+      # The SPIRE 1.15.3 agent caches JWT-SVIDs even with -jwtSVIDIncludeJTI, so a workload gets the
+      # same SVID (same jti) on every fetch. Strict replay rejection would refuse the second token
+      # request. Explicit opt-out; residual risk in docs/security.md.
+      - --svid-replay=allow-reuse-within-lifetime
 
   notes-a:
     <<: *workload

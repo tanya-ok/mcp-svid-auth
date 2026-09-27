@@ -6,11 +6,13 @@ cd "$(dirname "$0")"
 PARENT="spiffe://example.org/node/agent"
 LABEL="org.example.svid.workload"
 
+# -jwtSVIDIncludeJTI (SPIRE 1.15+): each JWT-SVID gets a fresh random jti and the agent JWT-SVID
+# cache is bypassed. authz accepts each (sub, jti) once, so a cached SVID would be refused on reuse.
 entry() {
   local spiffe_id="$1" workload="$2"
   docker compose exec -T spire-server /opt/spire/bin/spire-server entry create \
     -parentID "$PARENT" -spiffeID "$spiffe_id" -selector "docker:label:$LABEL:$workload" \
-    -jwtSVIDTTL 300 >/dev/null
+    -jwtSVIDTTL 300 -jwtSVIDIncludeJTI >/dev/null
   echo "registered $spiffe_id (docker:label:$LABEL:$workload)"
 }
 
