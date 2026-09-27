@@ -4,7 +4,11 @@ from __future__ import annotations
 
 import json
 import signal
+import subprocess
+import sys
 import threading
+import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -119,15 +123,70 @@ def test_watcher_picks_up_change(
     assert RESEARCH not in server.policy.grants
 
 
+def _wait_for(predicate: Callable[[], bool], seconds: float = 5.0) -> bool:
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(0.01)
+    return predicate()
+
+
 def test_sighup_forces_reload(server: AuthzServer, tmp_path: Path) -> None:
     previous = signal.getsignal(signal.SIGHUP)
+    reloader = install_policy_reload(server, poll_seconds=0)
     try:
-        stop = install_policy_reload(server, poll_seconds=0)
         signal.raise_signal(signal.SIGHUP)
-        stop.set()
+        assert _wait_for((tmp_path / "authz.jsonl").exists)
     finally:
+        reloader.stop()
         signal.signal(signal.SIGHUP, previous)
     assert len(_reloads(tmp_path)) == 1
+
+
+_SIGHUP_UNDER_LOCK = """
+import signal, sys, time
+from pathlib import Path
+from mcp_svid_auth.audit import AuditLog
+from mcp_svid_auth.authz import AuthzServer, install_policy_reload
+from mcp_svid_auth.policy import Policy
+from mcp_svid_auth.spiffe_keys import StaticJwksResolver
+
+policy_path = Path(sys.argv[1])
+audit_path = Path(sys.argv[2])
+policy = Policy.load(policy_path)
+server = AuthzServer(
+    issuer="https://authz.example.org",
+    policy=policy,
+    resolver=StaticJwksResolver({policy.trust_domain: {"keys": []}}),
+    audit=AuditLog(path=audit_path, component="authz"),
+    policy_path=policy_path,
+)
+reloader = install_policy_reload(server, poll_seconds=0)
+with server.audit._lock, server._reload_lock:
+    signal.raise_signal(signal.SIGHUP)
+    signal.raise_signal(signal.SIGHUP)
+deadline = time.monotonic() + 5
+while not audit_path.exists() and time.monotonic() < deadline:
+    time.sleep(0.01)
+reloader.stop()
+print("done")
+"""
+
+
+def test_sighup_while_audit_lock_held_does_not_deadlock(policy_file: Path, tmp_path: Path) -> None:
+    audit_path = tmp_path / "sub.jsonl"
+    result = subprocess.run(
+        [sys.executable, "-c", _SIGHUP_UNDER_LOCK, str(policy_file), str(audit_path)],
+        capture_output=True,
+        text=True,
+        timeout=20,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "done"
+    reasons = [json.loads(line)["reason"] for line in audit_path.read_text().splitlines()]
+    assert reasons and reasons[0].startswith("loaded sha256=")
 
 
 def test_cli_poll_default() -> None:
