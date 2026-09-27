@@ -4,6 +4,7 @@ The server:
 - serves Protected Resource Metadata (RFC 9728),
 - validates bearer tokens locally (signature via authz JWKS, iss, exp, aud == own URI),
 - enforces a scope per tool and answers 403 insufficient_scope otherwise,
+- lists in tools/list only the tools the token's scopes allow,
 - denies tools/call for any tool without a declared scope, and unparseable bodies,
 - writes one JSON audit line per decision,
 - never forwards the incoming token.
@@ -24,7 +25,7 @@ from urllib.parse import urlsplit
 
 import httpx2
 import jwt
-from mcp.server.auth.middleware.auth_context import AuthContextMiddleware
+from mcp.server.auth.middleware.auth_context import AuthContextMiddleware, get_access_token
 from mcp.server.auth.middleware.bearer_auth import (
     AuthenticatedUser,
     BearerAuthBackend,
@@ -32,9 +33,11 @@ from mcp.server.auth.middleware.bearer_auth import (
 )
 from mcp.server.auth.provider import AccessToken
 from mcp.server.auth.routes import build_resource_metadata_url
+from mcp.server.context import ServerRequestContext
 from mcp.server.mcpserver import MCPServer
 from mcp.server.streamable_http_manager import StreamableHTTPASGIApp, StreamableHTTPSessionManager
 from mcp.server.transport_security import TransportSecuritySettings
+from mcp.types import ListToolsResult, PaginatedRequestParams
 from pydantic import AnyHttpUrl
 from starlette.applications import Starlette
 from starlette.middleware import Middleware
@@ -368,10 +371,29 @@ class NotesStore:
         return len(self.notes)
 
 
+class ScopedToolsServer(MCPServer):
+    """MCPServer whose tools/list shows only the tools the caller's token may call.
+
+    Deny by default: no token, or a tool without a declared scope, lists nothing.
+    """
+
+    def __init__(self, name: str) -> None:
+        super().__init__(name=name)
+        self.tool_scopes: dict[str, str] = {}
+
+    async def _handle_list_tools(
+        self, ctx: ServerRequestContext[Any], params: PaginatedRequestParams | None
+    ) -> ListToolsResult:
+        access_token = get_access_token()
+        granted = set(access_token.scopes) if access_token else set()
+        tools = [t for t in await self.list_tools() if self.tool_scopes.get(t.name) in granted]
+        return ListToolsResult(tools=tools)
+
+
 def build_mcp(name: str, store: NotesStore) -> tuple[MCPServer, dict[str, str]]:
     """Register tools together with the scope each one needs."""
-    mcp: MCPServer = MCPServer(name=name)
-    scopes: dict[str, str] = {}
+    mcp = ScopedToolsServer(name=name)
+    scopes = mcp.tool_scopes
 
     def tool(tool_name: str, scope: str, description: str) -> Callable[[Any], Any]:
         scopes[tool_name] = scope
