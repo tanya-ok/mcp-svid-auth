@@ -9,8 +9,10 @@ Fail closed: if refresh keeps failing until the token expires, the wrapper delet
 terminates the child and exits with EXIT_TOKEN_EXPIRED.
 
 --export-token-env also sets MCP_ACCESS_TOKEN. That is weaker: the value is visible in the
-process environment to the same UID, is inherited by grandchildren, and is never refreshed, so
-a child that reads it holds an expired token after the TTL.
+process environment to the same UID and is inherited by grandchildren. An environment cannot
+be refreshed from outside, so the child lives at most one token lifetime: when the exported
+token expires the wrapper terminates the child and exits with EXIT_TOKEN_EXPIRED, and the MCP
+host starts it again with a fresh token.
 """
 
 from __future__ import annotations
@@ -114,6 +116,8 @@ def run_wrapped(
     """Run `command` with a refreshed token file. Returns the exit code to use."""
     token_dir = Path(tempfile.mkdtemp(prefix="mcp-svid-"))
     child: subprocess.Popen[bytes] | None = None
+    env_expiry: threading.Timer | None = None
+    env_expired = threading.Event()
     refresher = Refresher(fetch, token_dir / "token", margin=margin)
     try:
         token = refresher.refresh_once()
@@ -128,12 +132,26 @@ def run_wrapped(
         on_child(running)
         thread = threading.Thread(target=refresher.run, daemon=True)
         thread.start()
+        if export_token_env:
+
+            def stop_on_env_expiry() -> None:
+                env_expired.set()
+                running.terminate()
+
+            env_expiry = threading.Timer(
+                max(0.0, refresher.expires_at - time.time()), stop_on_env_expiry
+            )
+            env_expiry.daemon = True
+            env_expiry.start()
         code = running.wait()
         refresher.stop.set()
         thread.join(timeout=5)
-        return EXIT_TOKEN_EXPIRED if refresher.expired.is_set() else code
+        expired = refresher.expired.is_set() or env_expired.is_set()
+        return EXIT_TOKEN_EXPIRED if expired else code
     finally:
         refresher.stop.set()
+        if env_expiry is not None:
+            env_expiry.cancel()
         if child is not None and child.poll() is None:
             child.terminate()
         for leftover in (refresher.path, refresher.path.with_suffix(".tmp")):
@@ -168,7 +186,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--export-token-env",
         action="store_true",
-        help="also set MCP_ACCESS_TOKEN (weaker: visible in the environment, never refreshed)",
+        help=(
+            "also set MCP_ACCESS_TOKEN (weaker: visible in the environment); the child is"
+            " stopped when that token expires"
+        ),
     )
     parser.add_argument("command", nargs=argparse.REMAINDER, help="child command, after --")
     return parser

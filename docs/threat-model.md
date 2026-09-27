@@ -169,7 +169,7 @@ Links go to the source on `main`. "Not mitigated" names the matching non-goal or
 | UCA-10.8 | Partly | The scope guard stops waiting for a `tools/call` at the token `exp` and answers 401 `invalid_token` (audit `token_expired_during_call`). A sync tool keeps running on its worker thread, so `notes.write` re-checks expiry right before it changes state and refuses after `exp`. A tool without that re-check can still finish its side effect late | [`test_call_outliving_token_gets_401`, `test_write_refuses_after_expiry_without_side_effect`](https://github.com/tanya-ok/mcp-svid-auth/blob/main/tests/test_token_expiry.py) |
 | UCA-11.2, 11.3 | Mitigated (default) | Wrapper passes a 0600 token file, removes inherited `MCP_ACCESS_TOKEN`. This deviates on purpose from the stdio SHOULD in the spec | [`test_token_file_is_owner_only`, `test_child_gets_only_token_file_by_default`](https://github.com/tanya-ok/mcp-svid-auth/blob/main/tests/test_stdio_wrapper.py) |
 | UCA-11.4 | Mitigated | Child is not started if the first fetch fails | [`test_cleanup_when_first_fetch_fails`](https://github.com/tanya-ok/mcp-svid-auth/blob/main/tests/test_stdio_wrapper.py) |
-| UCA-11.6 | Not mitigated (opt in) | `--export-token-env` value is never refreshed or removed | [`test_env_export_is_opt_in`](https://github.com/tanya-ok/mcp-svid-auth/blob/main/tests/test_stdio_wrapper.py), [stdio wrapper](stdio-wrapper.md#-export-token-env) |
+| UCA-11.6 | Mitigated (opt in) | With `--export-token-env` the wrapper stops the child when the exported token expires and exits 75; the host restarts it with a fresh token. Detached grandchildren keep the expired value | [`test_env_export_is_opt_in`, `test_env_export_stops_child_when_exported_token_expires`](https://github.com/tanya-ok/mcp-svid-auth/blob/main/tests/test_stdio_wrapper.py), [stdio wrapper](stdio-wrapper.md#-export-token-env) |
 
 ### Not mitigated, summary
 
@@ -181,7 +181,6 @@ Links go to the source on `main`. "Not mitigated" names the matching non-goal or
 | UCA-8.5 (partly) | H-2 | LS-9 | JWT-SVID reuse allowed in the demo (SPIRE 1.15.3 agent SVID cache) |
 | UCA-10.5 (no test) | H-2 | LS-4 | No token exchange or `act` chain |
 | UCA-10.8 (partly) | H-3 | none listed | Tools without their own expiry re-check can finish a side effect after `exp` |
-| UCA-11.6 | H-2, H-3 | LS-5 | `--export-token-env` is opt in |
 
 ## 6. Next demo scenarios
 

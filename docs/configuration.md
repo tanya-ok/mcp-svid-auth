@@ -86,7 +86,7 @@ Run a stdio MCP server with a short-lived token from the Workload API
 | `--allow-private-network` | off | Dev only: accept hosts that resolve to private, loopback or link-local addresses |
 | `--socket` | none | Workload API socket, default SPIFFE_ENDPOINT_SOCKET |
 | `--refresh-margin` | `60` | Seconds before expiry to refresh |
-| `--export-token-env` | off | Also set MCP_ACCESS_TOKEN (weaker: visible in the environment, never refreshed) |
+| `--export-token-env` | off | Also set MCP_ACCESS_TOKEN (weaker: visible in the environment); the child is stopped when that token expires |
 | `-- command [args...]` | required | Child command, after -- |
 
 Fixed values:

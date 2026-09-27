@@ -47,16 +47,16 @@ If the first token fetch fails, the child is never started. Otherwise the wrappe
 
 ## `--export-token-env`
 
-Also sets `MCP_ACCESS_TOKEN` to the first token. This is weaker:
+Also sets `MCP_ACCESS_TOKEN` to the first token. A process environment cannot be changed from outside, so the child lives at most one token lifetime: when the exported token expires, the wrapper terminates the child and exits with code 75. The MCP host then starts it again, and the new child gets a fresh token. The token file is still written and refreshed in this mode.
 
 | Property | Token file (default) | `--export-token-env` |
 |---|---|---|
 | Visible to | Owner UID via file mode 0600 | Same UID via the process environment |
 | Inherited by grandchildren | Only the path | The value |
-| Refreshed | Yes | Never. The child holds an expired token after the TTL. |
-| Removed on expiry | Yes | No |
+| Refreshed | Yes | No. The child is stopped at the token expiry instead |
+| Child lifetime | Until it exits or refresh fails | At most one token lifetime (300s) |
 
-Use it only for children that cannot read a file.
+Grandchildren that detach from the child are not stopped and keep the expired value. Use this mode only for children that cannot read a file.
 
 ## Status
 
