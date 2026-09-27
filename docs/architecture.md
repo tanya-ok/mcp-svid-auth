@@ -28,13 +28,17 @@ flowchart LR
 | Module | Command | Role |
 |---|---|---|
 | `authz` | `mcp-svid-authz` | Token endpoint. JWT-SVID client assertion in, audience-bound JWT access token out. Publishes JWKS and RFC 8414 metadata. |
-| `mcp_server` | `mcp-svid-notes` | MCP server over Streamable HTTP. Tools `notes.search` (`notes:read`) and `notes.write` (`notes:write`). |
-| `agent_client` | `mcp-svid-agent` | Discovers the authorization server, refuses it unless it is on the `--trusted-issuer` allowlist, fetches its SVID, gets a token, calls tools. `--steal-token` replays a token against another server. |
+| `mcp_server` | `mcp-svid-notes` | MCP server over Streamable HTTP. Tools `notes.search` (`notes:read`) and `notes.write` (`notes:write`); with `--upstream-resource` also `notes.search_upstream` (`notes:read`), which calls another MCP server with the server's own token. |
+| `agent_client` | `mcp-svid-agent` | Discovers the authorization server, refuses it unless it is on the `--trusted-issuer` allowlist, fetches its SVID, gets a token, calls tools. Refuses non-https and non-public URLs unless relaxed for dev. `--steal-token` replays a token against another server. |
 | `stdio_wrapper` | `mcp-svid-stdio` | Starts a local stdio MCP server with a refreshed token file. See [stdio wrapper](stdio-wrapper.md). |
 | `policy` | none | Allowlist of SPIFFE ID, resource and scopes. |
-| `audit` | none | One JSON line per decision, to a file or stderr. |
+| `audit` | `mcp-svid-audit-verify` | One hash-chained JSON line per decision, to a file or stderr, and the chain verifier. |
 | `spiffe_keys` | none | JWT-SVID source and key resolver: Workload API, or a static JWKS for tests. |
-| `deploy/` | `make demo` | SPIRE server and agent 1.15.3, registration entries, the three services, four scenarios. |
+| `deploy/` | `make demo` | SPIRE server and agent 1.15.3, registration entries, the services, ten scenarios. |
+
+## Upstream calls without token passthrough
+
+With `--upstream-resource`, a notes server gets the tool `notes.search_upstream`. It runs the same client flow as the agent (discovery, `--trusted-issuer`, URL checks, JWT-SVID client assertion) under the server's own SPIFFE ID, and caches that token until 30s before `exp`. The caller's token never leaves the server. The upstream audit line therefore names the relay (`spiffe://example.org/mcp/notes-a`), not the original caller; carrying the caller along needs a delegation chain (token exchange with an `act` claim), which is not implemented.
 
 ## Endpoints
 
@@ -75,6 +79,7 @@ sequenceDiagram
 
 Steps on the agent side (`agent_client.fetch_access_token`):
 
+0. Before each request, check the URL: `https` only, and every address the host resolves to must be public (not private, loopback, link-local, shared or multicast). A failing URL is refused with `url_refused` and nothing is sent to it. This applies to the resource, the chosen issuer, the `token_endpoint` from the issuer metadata, and the tool call. `--allow-http` and `--allow-private-network` relax the two checks for local and compose setups.
 1. Read Protected Resource Metadata. Fail if its `resource` differs from the requested one.
 2. Take the first entry of `authorization_servers` that is on the `--trusted-issuer` allowlist. Refuse with `issuer_refused` if there is none. Comparison is exact after lowercasing scheme and host, dropping the default port and mapping an empty path to `/` (RFC 8414 section 2, RFC 9728 section 3). No prefix match; `/t` and `/t/` differ.
 3. Read that authorization server's metadata. Fail if its `issuer` differs.
@@ -115,15 +120,30 @@ The authz signing key is a P-256 key generated in memory at start. It rotates on
 Every allow and deny decision in authz and the MCP servers is one JSON line:
 
 ```json
-{"timestamp":"2026-09-26T18:07:11.742+00:00","component":"mcp_server:notes-b","spiffe_id":"spiffe://example.org/agent/research","tool":"notes.write","decision":"deny","reason":"insufficient_scope: needs notes:write"}
+{"record_id":"5f0c9a53-2a8e-4d0b-9a57-0f3e2f6d1c44","parent_record_id":"b1d7e0a2-6c1f-4e89-8f0e-2d4c7a9b3e51","prev_hash":"3b9f0c2e8d7a41f6b5e0c9d8a7f6e5d4c3b2a1908f7e6d5c4b3a29180f7e6d5c","timestamp":"2026-09-26T18:07:11.742+00:00","component":"mcp_server:notes-b","spiffe_id":"spiffe://example.org/agent/research","tool":"notes.write","decision":"deny","reason":"insufficient_scope: needs notes:write"}
 ```
 
 | Field | Content |
 |---|---|
+| `record_id` | random UUIDv4 |
+| `parent_record_id` | `record_id` of the previous line in the same file, `null` for the first |
+| `prev_hash` | SHA-256, lowercase hex, of the previous line in RFC 8785 (JCS) form, `null` for the first |
 | `component` | `authz` or `mcp_server:<name>` |
 | `spiffe_id` | caller, prefixed with `unverified:` when the decision was made before the signature check, `null` when unknown |
 | `tool` | tool name for `tools/call`, else `null` |
-| `decision` | `allow` or `deny` |
+| `decision` | `allow`, `deny`, or `policy_reload` (authz only) |
 | `reason` | OAuth error code and fixed description, plus audit-only detail |
 
 Without `--audit-log` the lines go to stderr.
+
+### Hash chain
+
+Each file is one chain, built as in [draft-sharif-agent-audit-trail-05](https://datatracker.ietf.org/doc/draft-sharif-agent-audit-trail/) (checked 2026-09-27): `prev_hash(N) = hex(SHA-256(JCS(record N-1)))`, and `parent_record_id` links to the previous `record_id`. The field set is this project's own, not the full AAT record. A process that opens an existing file continues its chain from the last line, and refuses to write if that line does not parse. One writer per file.
+
+```sh
+mcp-svid-audit-verify authz.jsonl notes-a.jsonl
+```
+
+The verifier recomputes every link and reports edited, deleted, reordered or inserted lines and timestamps that go backwards. Exit code 0 means every chain is intact.
+
+The chain is tamper-evident, not tamper-proof: anyone who can write the file can rewrite the whole chain from the edited line on. Anchoring the last hash elsewhere, or signing records, is not implemented.

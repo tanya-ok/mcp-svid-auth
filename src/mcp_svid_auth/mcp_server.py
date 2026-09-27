@@ -7,7 +7,10 @@ The server:
 - lists in tools/list only the tools the token's scopes allow,
 - denies tools/call for any tool without a declared scope, and unparseable bodies,
 - writes one JSON audit line per decision,
-- never forwards the incoming token.
+- stops waiting for a tool call once the caller's token expires, and re-checks expiry
+  before a tool changes state,
+- never forwards the incoming token. With --upstream-resource it calls one upstream MCP server
+  with its own SVID-based token (tool notes.search_upstream).
 """
 
 from __future__ import annotations
@@ -23,6 +26,7 @@ from pathlib import Path
 from typing import Any, Protocol
 from urllib.parse import urlsplit
 
+import anyio
 import httpx2
 import jwt
 from mcp.server.auth.middleware.auth_context import AuthContextMiddleware, get_access_token
@@ -35,6 +39,7 @@ from mcp.server.auth.provider import AccessToken
 from mcp.server.auth.routes import build_resource_metadata_url
 from mcp.server.context import ServerRequestContext
 from mcp.server.mcpserver import MCPServer
+from mcp.server.mcpserver.exceptions import ToolError
 from mcp.server.streamable_http_manager import StreamableHTTPASGIApp, StreamableHTTPSessionManager
 from mcp.server.transport_security import TransportSecuritySettings
 from mcp.types import ListToolsResult, PaginatedRequestParams
@@ -47,7 +52,20 @@ from starlette.responses import JSONResponse, Response
 from starlette.routing import Route
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
+from mcp_svid_auth.agent_client import (
+    STRICT_URLS,
+    HttpFactory,
+    TokenRequestError,
+    UrlPolicy,
+    add_url_flags,
+    call_tool,
+    default_http,
+    fetch_access_token,
+    issuer_arg,
+    url_policy_from_args,
+)
 from mcp_svid_auth.audit import AuditLog
+from mcp_svid_auth.spiffe_keys import SvidSource, WorkloadApiSvidSource
 
 JWKS_CACHE_SECONDS = 60
 JWKS_MIN_REFETCH_SECONDS = 10
@@ -202,11 +220,13 @@ class ToolScopeGuard:
         tool_scopes: dict[str, str],
         resource_metadata_url: str,
         audit: AuditLog,
+        clock: Callable[[], float] = time.time,
     ) -> None:
         self.app = app
         self.tool_scopes = tool_scopes
         self.resource_metadata_url = resource_metadata_url
         self.audit = audit
+        self.clock = clock
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] != "http" or scope["method"] != "POST":
@@ -249,7 +269,54 @@ class ToolScopeGuard:
             self.audit.write(
                 spiffe_id=spiffe_id, tool=call, decision="allow", reason=f"scope {required}"
             )
-        await self.app(scope, _replay(body, receive), send)
+        expires_at = user.access_token.expires_at if isinstance(user, AuthenticatedUser) else None
+        if not calls or expires_at is None:
+            await self.app(scope, _replay(body, receive), send)
+            return
+        await self._until_expiry(
+            scope,
+            _replay(body, receive),
+            send,
+            expires_at=expires_at,
+            spiffe_id=spiffe_id,
+            calls=calls,
+        )
+
+    async def _until_expiry(  # noqa: PLR0913
+        self,
+        scope: Scope,
+        receive: Receive,
+        send: Send,
+        *,
+        expires_at: int,
+        spiffe_id: str | None,
+        calls: list[str],
+    ) -> None:
+        """Run a tools/call request, but stop waiting for it once the token expires.
+
+        The response is abandoned, not the work: a sync tool keeps running on its worker
+        thread, so tools that change state re-check expiry themselves (`require_live_token`).
+        """
+        started = False
+
+        async def tracking_send(message: Message) -> None:
+            nonlocal started
+            if message["type"] == "http.response.start":
+                started = True
+            await send(message)
+
+        try:
+            with anyio.fail_after(max(0.0, expires_at - self.clock())):
+                await self.app(scope, receive, tracking_send)
+        except TimeoutError:
+            self.audit.write(
+                spiffe_id=spiffe_id,
+                tool=",".join(calls),
+                decision="deny",
+                reason="token_expired_during_call",
+            )
+            if not started:
+                await _error(send, 401, "invalid_token", "access token expired during the call")
 
 
 class AuditedRequireAuth:
@@ -359,6 +426,17 @@ async def _forbidden(send: Send, required: str, resource_metadata_url: str) -> N
     await send({"type": "http.response.body", "body": body})
 
 
+class TokenExpiredError(ToolError):
+    """The caller's access token expired before the tool reached its side effect."""
+
+
+def require_live_token(clock: Callable[[], float] = time.time) -> None:
+    """Raise unless the current request carries an access token that has not expired."""
+    token = get_access_token()
+    if token is None or token.expires_at is None or token.expires_at <= clock():
+        raise TokenExpiredError("access token expired")
+
+
 @dataclass
 class NotesStore:
     notes: list[str] = field(default_factory=lambda: ["welcome to the notes server"])
@@ -369,6 +447,55 @@ class NotesStore:
     def write(self, text: str) -> int:
         self.notes.append(text)
         return len(self.notes)
+
+
+@dataclass
+class Upstream:
+    """This server's own credential for one upstream MCP server.
+
+    Invariant 3: the token sent upstream is always obtained here, with this server's JWT-SVID,
+    for the upstream `resource`. The caller's token is never read, stored or forwarded.
+    """
+
+    resource: str
+    scope: str
+    trusted_issuers: list[str]
+    svid_source: SvidSource
+    url_policy: UrlPolicy = STRICT_URLS
+    http: HttpFactory = default_http
+    refresh_margin: int = 30
+    _token: str | None = None
+    _expires_at: float = 0.0
+    _lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+
+    async def token(self) -> str:
+        async with self._lock:
+            if self._token is None or time.time() >= self._expires_at - self.refresh_margin:
+                body = await fetch_access_token(
+                    self.resource,
+                    self.svid_source,
+                    scope=self.scope,
+                    trusted_issuers=self.trusted_issuers,
+                    http=self.http,
+                    url_policy=self.url_policy,
+                )
+                self._token = str(body["access_token"])
+                self._expires_at = time.time() + int(body["expires_in"])
+            return self._token
+
+    async def search(self, query: str) -> str:
+        try:
+            token = await self.token()
+        except TokenRequestError:
+            raise ToolError("upstream credential unavailable") from None
+        return await call_tool(
+            self.resource,
+            token,
+            "notes.search",
+            {"query": query},
+            http=self.http,
+            url_policy=self.url_policy,
+        )
 
 
 class ScopedToolsServer(MCPServer):
@@ -390,7 +517,9 @@ class ScopedToolsServer(MCPServer):
         return ListToolsResult(tools=tools)
 
 
-def build_mcp(name: str, store: NotesStore) -> tuple[MCPServer, dict[str, str]]:
+def build_mcp(
+    name: str, store: NotesStore, upstream: Upstream | None = None
+) -> tuple[MCPServer, dict[str, str]]:
     """Register tools together with the scope each one needs."""
     mcp = ScopedToolsServer(name=name)
     scopes = mcp.tool_scopes
@@ -405,7 +534,18 @@ def build_mcp(name: str, store: NotesStore) -> tuple[MCPServer, dict[str, str]]:
 
     @tool("notes.write", "notes:write", "Append a note.")
     def write(text: str) -> str:
+        require_live_token()
         return f"stored note #{store.write(text)}"
+
+    if upstream is not None:
+
+        @tool(
+            "notes.search_upstream",
+            "notes:read",
+            "Search notes on the upstream server, called with this server's own credential.",
+        )
+        async def search_upstream(query: str) -> str:
+            return await upstream.search(query)
 
     registered = {t.name for t in mcp._tool_manager.list_tools()}
     if registered != set(scopes):
@@ -422,9 +562,10 @@ def create_app(  # noqa: PLR0913
     audit: AuditLog,
     store: NotesStore | None = None,
     allowed_hosts: list[str] | None = None,
+    upstream: Upstream | None = None,
 ) -> Starlette:
     resource = resource.rstrip("/")
-    mcp, tool_scopes = build_mcp(name, store or NotesStore())
+    mcp, tool_scopes = build_mcp(name, store or NotesStore(), upstream)
     security = TransportSecuritySettings(
         enable_dns_rebinding_protection=allowed_hosts is not None,
         allowed_hosts=allowed_hosts or [],
@@ -496,20 +637,52 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--audit-log", type=Path, help="audit log file (JSON lines, appended), default stderr"
     )
+    parser.add_argument(
+        "--upstream-resource",
+        metavar="URI",
+        help="upstream MCP server for notes.search_upstream, called with this server's own token",
+    )
+    parser.add_argument(
+        "--upstream-scope", default="notes:read", help="scope requested for the upstream token"
+    )
+    parser.add_argument(
+        "--trusted-issuer",
+        action="append",
+        type=issuer_arg,
+        metavar="URL",
+        help="authorization server allowed for the upstream token; required with an upstream",
+    )
+    parser.add_argument(
+        "--socket", help="Workload API socket for the upstream SVID, default SPIFFE_ENDPOINT_SOCKET"
+    )
+    add_url_flags(parser)
     return parser
 
 
 def main(argv: list[str] | None = None) -> None:
     import uvicorn  # noqa: PLC0415
 
-    args = build_parser().parse_args(argv)
+    parser = build_parser()
+    args = parser.parse_args(argv)
     issuer = args.issuer.rstrip("/")
+    upstream = None
+    if args.upstream_resource:
+        if not args.trusted_issuer:
+            parser.error("--upstream-resource needs at least one --trusted-issuer")
+        upstream = Upstream(
+            resource=args.upstream_resource,
+            scope=args.upstream_scope,
+            trusted_issuers=args.trusted_issuer,
+            svid_source=WorkloadApiSvidSource(socket_path=args.socket),
+            url_policy=url_policy_from_args(args),
+        )
     app = create_app(
         name=args.name,
         resource=args.resource,
         issuer=issuer,
         jwks=JwksFetcher(args.jwks_uri or f"{issuer}/jwks.json"),
         audit=AuditLog(path=args.audit_log, component=f"mcp_server:{args.name}"),
+        upstream=upstream,
     )
     uvicorn.run(app, host=args.host, port=args.port)
 

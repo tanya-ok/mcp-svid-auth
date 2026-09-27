@@ -14,7 +14,8 @@ JWT-SVID to access token bridge (POC)
 | Flag | Default | Meaning |
 |---|---|---|
 | `--issuer` | required | Public base URL, used as iss and as the required SVID aud; trailing slash removed |
-| `--policy` | required | Path to the policy YAML file |
+| `--policy` | required | Path to the policy YAML file; reloaded on SIGHUP and when its content changes |
+| `--policy-poll-seconds` | `5.0` | How often to check the policy file for changes; 0 disables polling (SIGHUP only) |
 | `--host` | `127.0.0.1` | Listen address |
 | `--port` | `8100` | Listen port |
 | `--static-jwks` | none | Test mode: JWT-SVID bundle as a JWKS file instead of the Workload API |
@@ -45,6 +46,12 @@ Notes MCP server (POC)
 | `--host` | `127.0.0.1` | Listen address |
 | `--port` | `8101` | Listen port |
 | `--audit-log` | none | Audit log file (JSON lines, appended), default stderr |
+| `--upstream-resource` | none | Upstream MCP server for notes.search_upstream, called with this server's own token |
+| `--upstream-scope` | `notes:read` | Scope requested for the upstream token |
+| `--trusted-issuer` | none | Authorization server allowed for the upstream token; required with an upstream |
+| `--socket` | none | Workload API socket for the upstream SVID, default SPIFFE_ENDPOINT_SOCKET |
+| `--allow-http` | off | Dev only: accept plain http URLs for discovery, token requests and tool calls |
+| `--allow-private-network` | off | Dev only: accept hosts that resolve to private, loopback or link-local addresses |
 
 Fixed values:
 
@@ -66,8 +73,11 @@ Agent that authenticates with its JWT-SVID
 | `--resource` | required | MCP server canonical URI |
 | `--scope` | required | Space separated scopes, e.g. 'notes:read notes:write' |
 | `--trusted-issuer` | required | Authorization server issuer the agent may mint SVIDs for; repeatable, exact match |
+| `--allow-http` | off | Dev only: accept plain http URLs for discovery, token requests and tool calls |
+| `--allow-private-network` | off | Dev only: accept hosts that resolve to private, loopback or link-local addresses |
 | `--spiffe-id` | none | Sent as client_id |
 | `--socket` | none | Workload API socket, default SPIFFE_ENDPOINT_SOCKET |
+| `--call` | none | Tool to call with JSON arguments; repeatable; default notes.search then notes.write |
 | `--steal-token` | none | Demo: send the token issued for --resource to OTHER_RESOURCE instead |
 
 ## `mcp-svid-stdio`
@@ -79,9 +89,11 @@ Run a stdio MCP server with a short-lived token from the Workload API
 | `--resource` | required | Upstream resource the child calls |
 | `--scope` | required | Space separated scopes |
 | `--trusted-issuer` | required | Authorization server issuer the wrapper may mint SVIDs for; repeatable, exact match |
+| `--allow-http` | off | Dev only: accept plain http URLs for discovery, token requests and tool calls |
+| `--allow-private-network` | off | Dev only: accept hosts that resolve to private, loopback or link-local addresses |
 | `--socket` | none | Workload API socket, default SPIFFE_ENDPOINT_SOCKET |
 | `--refresh-margin` | `60` | Seconds before expiry to refresh |
-| `--export-token-env` | off | Also set MCP_ACCESS_TOKEN (weaker: visible in the environment, never refreshed) |
+| `--export-token-env` | off | Also set MCP_ACCESS_TOKEN (weaker: visible in the environment); the child is stopped when that token expires |
 | `-- command [args...]` | required | Child command, after -- |
 
 Fixed values:
@@ -89,6 +101,20 @@ Fixed values:
 | Setting | Value |
 |---|---|
 | Exit code when the token cannot be refreshed | 75 |
+
+## `mcp-svid-audit-verify`
+
+Verify the hash chain of audit log files written with --audit-log
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `files` | required | Audit log files, one chain each |
+
+Fixed values:
+
+| Setting | Value |
+|---|---|
+| Chain | `prev_hash` = SHA-256 of the JCS form of the previous record, hex |
 
 ## Policy file
 
@@ -102,6 +128,10 @@ clients:
   - spiffe_id: spiffe://example.org/agent/research
     resources:
       http://notes-a:8101/mcp: [notes:read, notes:write]
+      http://notes-b:8102/mcp: [notes:read]
+  # notes-a calls notes-b with its own token for notes.search_upstream.
+  - spiffe_id: spiffe://example.org/mcp/notes-a
+    resources:
       http://notes-b:8102/mcp: [notes:read]
 # spiffe://example.org/agent/intruder has a valid SVID but is deliberately not listed.
 ```
