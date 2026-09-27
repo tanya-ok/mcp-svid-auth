@@ -11,7 +11,7 @@ The table below is the short view. [Threat model (STPA-Sec)](threat-model.md) de
 |---|---|---|
 | Static key leak | No static keys. SVID and access token both live 5 min. | A stolen access token works until expiry. |
 | Token replay to another server | `aud` bound to one resource. Each server checks `aud` equals its own URI. | None within one issuer. |
-| JWT-SVID replay to authz | SVID `aud` must be the issuer only. 5 min TTL. | No `jti` tracking. A stolen SVID can mint tokens for its whole lifetime. |
+| JWT-SVID replay to authz | SVID `aud` must be the issuer only. 5 min TTL. Each `(sub, jti)` is accepted once. | Seen-set is in memory and per process. A stolen, unused SVID still works once. |
 | SVID harvesting by a malicious resource | The agent mints SVIDs only for issuers on its `--trusted-issuer` allowlist. An issuer named in Protected Resource Metadata that is not on the list is refused, and logged as `issuer_refused`, before any request to it and before any SVID fetch. Exact match after scheme, host and default port normalization; no prefix match. | The allowlist is per process, not per resource. |
 | Workload impersonation | SPIRE docker attestor. Identity is bound to a container label, not a UID. | Anyone who can start a container with a registered label on that host gets that identity. |
 | Over-broad access | Allowlist per SPIFFE ID, resource and scope. Per-tool scope check. | Policy is a local file. No versioning or review flow. |
@@ -33,9 +33,11 @@ The table below is the short view. [Threat model (STPA-Sec)](threat-model.md) de
 | SVID `alg` in RS256/384/512, ES256/384/512, PS256/384 | 401 `invalid_client` | No `none`, no HMAC |
 | `sub` is a valid SPIFFE ID in the policy trust domain | 401 `invalid_client` | Caller identity comes from the expected trust domain |
 | Signature against the SPIRE JWT bundle, key by `kid` | 401 `invalid_client` | The SVID was issued by SPIRE for this trust domain |
-| `sub`, `aud`, `exp`, `iat` present; `exp` not past (30s leeway) | 401 `invalid_client` | The SVID is current |
+| `sub`, `aud`, `exp`, `iat`, `jti` present; `exp` not past (30s leeway) | 401 `invalid_client` | The SVID is current and individually identifiable |
 | `aud` is the issuer and nothing else | 401 `invalid_client` | The SVID was minted for this authorization server only |
 | `exp - iat` at most `--max-svid-lifetime` (300s) | 401 `invalid_client` | Long-lived SVIDs cannot be used as credentials |
+| `jti` a string of 1 to 256 characters, `(sub, jti)` not seen before | 401 `invalid_client` | Each SVID is used once (RFC 7523 section 3) |
+| Replay cache has room | 503 `temporarily_unavailable` | Memory is bounded and a full cache fails closed |
 | `client_id`, if sent, equals `sub` | 401 `invalid_client` | No identity mismatch between parameters |
 | SPIFFE ID in policy | 400 `unauthorized_client` | Only allowlisted workloads get tokens |
 | Resource allowed for that SPIFFE ID | 400 `invalid_target` | Per-server allowlist |
@@ -43,6 +45,15 @@ The table below is the short view. [Threat model (STPA-Sec)](threat-model.md) de
 | Trust bundle fetch fails | 503 `temporarily_unavailable` | Fails closed without leaking details |
 
 Error descriptions returned to the client are fixed strings. Exception details go only to the audit log.
+
+### JWT-SVID replay tracking
+
+- The token endpoint records each accepted `(sub, jti)` pair after the signature, audience and lifetime checks pass. Invalid assertions are not recorded.
+- An entry lives until the assertion `exp` plus the 30s clock leeway, the same window in which the SVID would still validate. Expired entries are evicted on every insert.
+- A second request with the same pair gets 401 `invalid_client` (`client assertion replayed`, RFC 7523 section 3.2). The audit line names the `jti`.
+- The cache holds at most 10,000 live entries. When full, new assertions get 503 `temporarily_unavailable` instead of evicting live entries.
+- The seen-set is in memory and per process. Several authz replicas, or a restart, each start with their own empty set.
+- SPIRE sets `jti` on JWT-SVIDs only when the registration entry asks for it, and the SPIRE agent caches JWT-SVIDs per audience. A workload that requests two tokens with one cached SVID gets the second request rejected.
 
 ### MCP server (`mcp_server.py`)
 
@@ -79,7 +90,8 @@ Error descriptions returned to the client are fixed strings. Exception details g
 |---|---|---|
 | Docker socket in the SPIRE agent | Full Docker API access for the agent container. See [Docker socket exposure](#docker-socket-exposure). | `deploy/docker-compose.yml` |
 | Label selectors | Anyone who can start a container with a registered label on the host gets that identity. Fits a single-host demo only. | `deploy/register.sh` |
-| No `jti` replay tracking | A stolen JWT-SVID or access token is usable until it expires (5 min). | `authz.py`, `mcp_server.py` |
+| No access token `jti` tracking | A stolen access token is usable until it expires (5 min). | `mcp_server.py` |
+| JWT-SVID seen-set per process | Replicas or a restart forget seen `jti` values. | `ReplayCache` |
 | Signing key in memory | Rotates only on restart. | `AuthzServer.signing_key` |
 | Plain HTTP | No TLS inside the compose network. | `deploy/docker-compose.yml` |
 
