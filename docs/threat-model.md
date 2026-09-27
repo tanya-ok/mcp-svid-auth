@@ -76,9 +76,9 @@ flowchart TB
 | User / operator | SPIRE entries, `policy.yaml`, the agent's task | Which workload runs where, which task needs which server and scope |
 | Agent | Tool selection | Task text and tool results, both untrusted input for security decisions |
 | MCP client | Credential lifecycle for one resource | PRM `resource`, AS `issuer`, token expiry |
-| SPIRE agent | Identity issuance | Attestation selectors (Unix UID here) |
+| SPIRE agent | Identity issuance | Attestation selectors (Docker container label here) |
 | Authorization server | Token issuance | SPIRE JWT bundle, grant policy loaded at start |
-| MCP server | Tool execution | Cached authz JWKS (60s), own canonical URI, tool scope map |
+| MCP server | Tool execution | Cached authz JWKS (60s, one refetch on unknown `kid` at most every 10s), own canonical URI, tool scope map |
 
 ## 3. Unsafe control actions
 
@@ -86,7 +86,7 @@ The four STPA types: NP = not provided causes a hazard; P = provided causes a ha
 
 | CA | NP | P | T | D |
 |---|---|---|---|---|
-| CA-1 register workload entry | UCA-1.1 No entry for a legitimate workload [H-5] | UCA-1.2 Entry selectors match processes other than the intended workload (UID-based attestor) [H-2]. UCA-1.3 Entry sets a long JWT-SVID TTL [H-3] | UCA-1.4 Entry created before the UID or host is under the operator's control [H-2] | UCA-1.5 Entry for a retired workload is kept [H-2, H-3] |
+| CA-1 register workload entry | UCA-1.1 No entry for a legitimate workload [H-5] | UCA-1.2 Entry selectors match processes other than the intended workload (any container that carries the registered label) [H-2]. UCA-1.3 Entry sets a long JWT-SVID TTL [H-3] | UCA-1.4 Entry created before the label namespace or host is under the operator's control [H-2] | UCA-1.5 Entry for a retired workload is kept [H-2, H-3] |
 | CA-2 load grant policy | UCA-2.1 Grant missing for a legitimate workload [H-5] | UCA-2.2 Grant broader than any task needs (all scopes, many resources) [H-3]. UCA-2.3 Grant names the wrong SPIFFE ID or trust domain [H-1] | UCA-2.4 Grant revocation takes effect only after already issued tokens expire [H-3] | UCA-2.5 Grant kept after the need ends [H-3] |
 | CA-3 issue JWT-SVID | UCA-3.1 Workload API unavailable [H-5] | UCA-3.2 SVID issued to an attacker process that passes attestation [H-2]. UCA-3.3 SVID `aud` is not only the AS issuer, so it can be replayed to another verifier [H-2] | UCA-3.4 SVID requested for an issuer before that issuer is validated [H-6, H-2] | UCA-3.5 SVID lifetime longer than the token request needs [H-2] |
 | CA-4 provide JWT bundle | UCA-4.1 Bundle unavailable, AS cannot verify [H-5] | UCA-4.2 Keys from a foreign trust domain are used to verify [H-1] | UCA-4.3 Stale bundle after key rotation [H-5] | UCA-4.4 Removed key kept in the verifier's cache [H-2] |
@@ -120,16 +120,16 @@ Scenarios of type A explain why a controller provides a UCA (flawed process mode
 
 | ID | Type | Scenario | UCAs | Losses |
 |---|---|---|---|---|
-| LS-1 | A, adversarial | A second process runs under the agent's UID on the same host. The Unix attestor cannot tell it apart, so the SPIRE agent issues it the agent's SVID. It then gets tokens within the agent's full grant. | UCA-1.2, UCA-3.2 | L-1, L-2, L-3 |
+| LS-1 | A, adversarial | Anyone who can start containers on the host starts one with the label `org.example.svid.workload=agent-research`. The docker attestor cannot tell it apart, so the SPIRE agent issues it the agent's SVID. It then gets tokens within the agent's full grant. A process that controls the SPIRE agent container also controls the Docker daemon through the mounted socket. | UCA-1.2, UCA-3.2 | L-1, L-2, L-3 |
 | LS-2 | B, adversarial | An attacker reads an access token from a log or memory and sends it to a second MCP server of the same issuer. | UCA-9.1 | L-1 |
-| LS-3 | A, adversarial | A compromised MCP server publishes PRM that names an attacker AS. The client validates only that the AS metadata is self-consistent, fetches an SVID for the attacker issuer and sends it there. The SVID cannot be replayed to the honest AS (`aud` mismatch), but the client now trusts tokens and errors from the attacker AS, and discovery fetches become an SSRF vector. | UCA-7.4, UCA-3.4 | L-1, L-2 |
+| LS-3 | A, adversarial | A compromised MCP server publishes PRM that names an attacker AS. Without an issuer allowlist the client would fetch an SVID for the attacker issuer and send it there; the SVID cannot be replayed to the honest AS (`aud` mismatch), but the client would trust tokens and errors from the attacker AS. With `--trusted-issuer` the client refuses before any request to that AS. The PRM fetch from the MCP server itself remains an SSRF vector. | UCA-7.4, UCA-3.4 | L-1, L-2 |
 | LS-4 | A, adversarial | An intermediate MCP server that needs an upstream API forwards the caller's token. The upstream accepts it, and its logs show the caller, not the server. | UCA-10.5 | L-1, L-3 |
 | LS-5 | A, adversarial | A local stdio server is launched with an API key in its environment. Any process under the same UID reads it from the process environment; grandchildren inherit it; it never expires. | UCA-11.2, UCA-11.3 | L-1, L-2 |
 | LS-6 | A, adversarial | A client presents a well-known client's CIMD URL as `client_id` and a `localhost` redirect. The AS shows the legitimate client name. The document proves domain control, not which process holds the redirect. | UCA-7.5 | L-1, L-2 |
 | LS-7 | A, adversarial | A tool result contains instructions. The agent follows them and calls `notes.write` with attacker content. Every check passes: the workload is authorized, only its intent is wrong. | UCA-5.1, UCA-6.1 | L-2 |
 | LS-8 | A | The operator removes a grant from `policy.yaml`. authz loads policy only at start, so tokens keep being issued until restart, and issued tokens stay valid for up to 5 minutes after that. | UCA-2.4, UCA-8.6 | L-1, L-2 |
-| LS-9 | A, adversarial | A JWT-SVID is stolen within its 5-minute lifetime and replayed at the token endpoint. No `jti` is tracked, so each replay mints a fresh token. | UCA-8.5 | L-1, L-2 |
-| LS-10 | B | authz restarts with a new signing key. MCP servers keep the old JWKS for up to 60 seconds and reject every token. | UCA-10.1 | L-4 |
+| LS-9 | A, adversarial | A JWT-SVID is stolen within its 5-minute lifetime and replayed at the token endpoint. In `--svid-replay reject` mode each `(sub, jti)` is accepted once, so only an unused SVID works, once. In `allow-reuse-within-lifetime` mode, which the compose demo needs because the SPIRE 1.15.3 agent re-serves cached SVIDs, each replay mints a fresh token until the SVID expires. | UCA-8.5 | L-1, L-2 |
+| LS-10 | B | authz restarts with a new signing key. MCP servers cache the old JWKS for up to 60 seconds. An unknown `kid` triggers one refetch, at most every 10 seconds, so tokens with the new key are refused for at most 10 seconds. | UCA-10.1 | L-4 |
 | LS-11 | A | The Workload API or the token endpoint is unreachable during refresh. The stdio wrapper cannot renew, so it deletes the token and stops the child. | UCA-7.1, UCA-11.5 | L-4 (accepted) |
 | LS-12 | A | A body with a tool name the scope guard does not recognize, or JSON the guard and the SDK parse differently, reaches dispatch without a scope decision. | UCA-10.7, UCA-10.4 | L-1, L-2 |
 
@@ -140,30 +140,30 @@ Links go to the source on `main`. "Not mitigated" names the matching non-goal or
 | UCA | Status | Mechanism | Evidence |
 |---|---|---|---|
 | UCA-1.1, 2.1, 3.1, 4.1, 8.1, 11.1 | Accepted (fail closed) | Missing identity, grant or bundle gives a fixed-string error, never a fallback credential | [`test_bundle_lookup_failure_is_503_without_detail`](https://github.com/tanya-ok/mcp-svid-auth/blob/main/tests/test_authz_hardening.py), [`test_cleanup_when_first_fetch_fails`](https://github.com/tanya-ok/mcp-svid-auth/blob/main/tests/test_stdio_wrapper.py) |
-| UCA-1.2, 3.2 | Not mitigated | Unix attestor is UID based | Known gap "Unix workload attestor"; `deploy/spire/agent.conf` |
+| UCA-1.2, 3.2 | Partly | docker attestor binds identity to a container label, not a UID. Anyone who can start containers on the host can set any label, and the SPIRE agent holds the Docker socket | Demo: an unregistered or missing label gets `PERMISSION_DENIED`; [`deploy/spire/agent.conf`](https://github.com/tanya-ok/mcp-svid-auth/blob/main/deploy/spire/agent.conf). Known gaps "Label selectors" and "Docker socket in the SPIRE agent" |
 | UCA-1.3, 3.5 | Mitigated | authz rejects SVIDs with `exp - iat` above `--max-svid-lifetime` (300s) and SVIDs without `iat` | [`authz.py`](https://github.com/tanya-ok/mcp-svid-auth/blob/main/src/mcp_svid_auth/authz.py), [`test_svid_lifetime_above_max_rejected`, `test_svid_without_iat_rejected`](https://github.com/tanya-ok/mcp-svid-auth/blob/main/tests/test_authz_hardening.py) |
 | UCA-1.4, 1.5, 2.5 | Not mitigated | Operator process. Entries and policy have no review or expiry flow | Known gap "Over-broad access: policy is a local file" |
 | UCA-2.2 | Partly | Per SPIFFE ID, per resource, per scope allowlist. Breadth is the operator's choice | [`policy.py`](https://github.com/tanya-ok/mcp-svid-auth/blob/main/src/mcp_svid_auth/policy.py), [`test_resource_not_allowed_for_client`](https://github.com/tanya-ok/mcp-svid-auth/blob/main/tests/test_authz.py) |
 | UCA-2.3 | Mitigated | Trust domain pinned in policy; SPIFFE ID must be allowlisted | [`test_foreign_trust_domain`, `test_spiffe_id_not_allowlisted`](https://github.com/tanya-ok/mcp-svid-auth/blob/main/tests/test_authz.py), demo scenario 3 |
 | UCA-2.4, 8.6 | Not mitigated | Policy loaded once at start; no token revocation or introspection | Non-goal "Not production software"; bounded by the 5-minute token TTL |
 | UCA-3.3 | Mitigated | authz requires SVID `aud` to be exactly its issuer | [`test_wrong_svid_audience`, `test_svid_with_extra_audience_is_rejected`](https://github.com/tanya-ok/mcp-svid-auth/blob/main/tests/test_authz.py) |
-| UCA-3.4, 7.4, 7.6 | Partly | Client checks PRM `resource` equals the requested resource and AS metadata `issuer` equals the PRM entry. No issuer allowlist, no HTTPS or private-range check on discovery URLs | [`agent_client.discover`](https://github.com/tanya-ok/mcp-svid-auth/blob/main/src/mcp_svid_auth/agent_client.py); no test yet. Known gap "No client-side issuer allowlist" |
+| UCA-3.4, 7.4, 7.6 | Mitigated | Required `--trusted-issuer` allowlist on the agent and the stdio wrapper. An issuer not on the list is refused before any request to it and before any SVID fetch; exact match after normalization. Client also checks PRM `resource` and AS metadata `issuer`. No HTTPS or private-range check on the PRM URL itself | [`test_untrusted_issuer_refused_before_svid`, `test_path_issuer_trailing_slash_refused`, `test_agent_cli_requires_trusted_issuer`, `test_stdio_cli_requires_trusted_issuer`](https://github.com/tanya-ok/mcp-svid-auth/blob/main/tests/test_issuer_allowlist.py) |
 | UCA-4.2 | Mitigated | Key selected by `kid` from the policy trust domain bundle only | [`test_svid_signed_by_unknown_key`, `test_svid_signed_by_wrong_key_with_known_kid`](https://github.com/tanya-ok/mcp-svid-auth/blob/main/tests/test_authz.py) |
 | UCA-4.3, 4.4 | Partly | Workload API mode fetches bundles from SPIRE per request; static JWKS mode is test only | [`spiffe_keys.py`](https://github.com/tanya-ok/mcp-svid-auth/blob/main/src/mcp_svid_auth/spiffe_keys.py) |
-| UCA-5.1, 5.2, 6.1 | Not mitigated | Identity bounds the blast radius (grant, scope, audience), not intent | Non-goal "No user delegation" |
+| UCA-5.1, 5.2, 6.1 | Not mitigated | Identity bounds the blast radius (grant, scope, audience), not intent. `tools/list` filtering hides tools outside the granted scope from the agent, but does not judge intent | Non-goal "No user delegation" |
 | UCA-7.1, 11.5 | Mitigated | stdio wrapper refreshes inside `--refresh-margin`, then fails closed: deletes the file, stops the child, exits 75 | [`test_refresher_rewrites_before_expiry`, `test_wrapper_exits_nonzero_when_token_expires`](https://github.com/tanya-ok/mcp-svid-auth/blob/main/tests/test_stdio_wrapper.py) |
 | UCA-7.2, 8.3 | Mitigated | `resource` required; token carries exactly one `aud`, trailing slash removed | [`test_missing_resource`, `test_valid_flow_issues_audience_bound_token`](https://github.com/tanya-ok/mcp-svid-auth/blob/main/tests/test_authz.py) |
 | UCA-7.3, 8.4 | Mitigated | `scope` required, must be a subset of the grant, no implicit default | [`test_scope_is_required`](https://github.com/tanya-ok/mcp-svid-auth/blob/main/tests/test_authz_hardening.py), [`test_scope_beyond_policy_is_rejected`, `test_requested_scope_is_narrowed`](https://github.com/tanya-ok/mcp-svid-auth/blob/main/tests/test_authz.py) |
 | UCA-7.5 | Not applicable | authz accepts only `client_credentials` with the `jwt-spiffe` assertion type. No CIMD, no DCR, no redirect URIs | [`test_protocol_errors`](https://github.com/tanya-ok/mcp-svid-auth/blob/main/tests/test_authz.py) |
 | UCA-8.2 | Mitigated | Asymmetric `alg` only, signature, `sub`, `aud`, `exp`, `iat`, `client_id` equals `sub` | [`test_unsigned_assertion_rejected`, `test_expired_svid`, `test_client_id_must_match_svid`](https://github.com/tanya-ok/mcp-svid-auth/blob/main/tests/test_authz.py) |
-| UCA-8.5 | Not mitigated | No `jti` tracking | Known gap "No `jti` replay tracking" |
+| UCA-8.5 | Partly | Default `--svid-replay reject`: `jti` required, each `(sub, jti)` accepted once, full cache fails closed. The compose demo runs `allow-reuse-within-lifetime` because the SPIRE 1.15.3 agent re-serves cached SVIDs; reuse is then only visible as `svid_jti` in the audit trail | [`test_replayed_svid_rejected`, `test_missing_jti_rejected`, `test_full_cache_fails_closed`, `test_allow_reuse_accepts_same_svid_and_audits_jti`](https://github.com/tanya-ok/mcp-svid-auth/blob/main/tests/test_authz_replay.py). Known gap "JWT-SVID reuse allowed in the demo" |
 | UCA-8.7 | Mitigated | Access tokens live 300s | [`authz.py`](https://github.com/tanya-ok/mcp-svid-auth/blob/main/src/mcp_svid_auth/authz.py), [`test_expired_access_token_rejected`](https://github.com/tanya-ok/mcp-svid-auth/blob/main/tests/test_resource_server.py) |
 | UCA-9.1, 10.2 | Mitigated | Server rejects any `aud` other than its canonical URI | [`test_token_for_a_is_rejected_by_b`](https://github.com/tanya-ok/mcp-svid-auth/blob/main/tests/test_end_to_end.py), demo scenario 4 |
 | UCA-9.2, 10.3 | Mitigated | `iss` pinned, `typ` `at+jwt`, ES256 only, `kid` from authz JWKS | [`test_token_from_other_issuer_rejected`, `test_access_token_without_at_jwt_typ_rejected`, `test_access_token_algorithm_pinned_to_es256`](https://github.com/tanya-ok/mcp-svid-auth/blob/main/tests/test_resource_server.py) |
 | UCA-9.3 | Mitigated | Tokens sent only in the `Authorization` header; PRM advertises `bearer_methods_supported` = `header` | [`agent_client.py`](https://github.com/tanya-ok/mcp-svid-auth/blob/main/src/mcp_svid_auth/agent_client.py), [`test_protected_resource_metadata`](https://github.com/tanya-ok/mcp-svid-auth/blob/main/tests/test_end_to_end.py) |
 | UCA-9.4 | Accepted | Expired token gets 401 `invalid_token`; client fetches a new one | [`test_expired_access_token_rejected`](https://github.com/tanya-ok/mcp-svid-auth/blob/main/tests/test_resource_server.py) |
-| UCA-10.1 | Not mitigated | JWKS cached 60s, no refetch on unknown `kid` | Known gap "No JWKS refetch on unknown `kid`" |
-| UCA-10.4, 10.7 | Mitigated | Scope guard parses the body before dispatch; unknown tools and unparseable bodies get 400; server refuses to start if a tool has no scope | [`test_unknown_tool_denied`, `test_unparseable_body_rejected`, `test_every_registered_tool_declares_a_scope`](https://github.com/tanya-ok/mcp-svid-auth/blob/main/tests/test_resource_server.py), [`test_scope_enforced_per_tool`](https://github.com/tanya-ok/mcp-svid-auth/blob/main/tests/test_end_to_end.py) |
+| UCA-10.1 | Mitigated | JWKS fetched asynchronously and cached 60s. Unknown `kid` triggers one refetch, at most every 10s; JWKS URL comes only from `--jwks-uri`; fetch failure fails closed | [`test_unknown_kid_refetches_once_and_accepts_rotated_key`, `test_refetch_is_rate_limited`, `test_fetch_failure_denies_without_raising`](https://github.com/tanya-ok/mcp-svid-auth/blob/main/tests/test_jwks_fetcher.py) |
+| UCA-10.4, 10.7 | Mitigated | Scope guard parses the body before dispatch; unknown tools and unparseable bodies get 400; server refuses to start if a tool has no scope; `tools/list` shows only tools whose scope was granted | [`test_unknown_tool_denied`, `test_unparseable_body_rejected`, `test_every_registered_tool_declares_a_scope`, `test_tools_list_filtered_by_scope`](https://github.com/tanya-ok/mcp-svid-auth/blob/main/tests/test_resource_server.py), [`test_scope_enforced_per_tool`](https://github.com/tanya-ok/mcp-svid-auth/blob/main/tests/test_end_to_end.py) |
 | UCA-10.5 | Mitigated by design, no test | Server makes no outbound call with the incoming token (security invariant 3). There is no upstream call to test yet | [`mcp_server.py`](https://github.com/tanya-ok/mcp-svid-auth/blob/main/src/mcp_svid_auth/mcp_server.py), [AGENTS.md](https://github.com/tanya-ok/mcp-svid-auth/blob/main/AGENTS.md). Non-goal "No token exchange or `act` claim chain yet" |
 | UCA-10.6 | Mitigated | One audit line per decision; pre-verification identity prefixed `unverified:` | [`test_authz_audit_lines`](https://github.com/tanya-ok/mcp-svid-auth/blob/main/tests/test_authz.py), [`test_token_for_a_is_rejected_by_b`](https://github.com/tanya-ok/mcp-svid-auth/blob/main/tests/test_end_to_end.py) |
 | UCA-10.8 | Not mitigated | Token checked once per HTTP request | Non-goal "Not production software"; tools here are short |
@@ -175,12 +175,10 @@ Links go to the source on `main`. "Not mitigated" names the matching non-goal or
 
 | UCA | Hazard | Loss scenario | Matching non-goal or gap |
 |---|---|---|---|
-| UCA-1.2, 3.2 | H-2 | LS-1 | Unix workload attestor |
-| UCA-3.4, 7.4, 7.6 (partly) | H-6 | LS-3 | No client-side issuer allowlist |
+| UCA-1.2, 3.2 (partly) | H-2 | LS-1 | Label selectors; Docker socket in the SPIRE agent |
 | UCA-5.1, 5.2, 6.1 | H-7 | LS-7 | No user delegation |
 | UCA-2.4, 8.6 | H-3 | LS-8 | Not production software (no revocation, no policy reload) |
-| UCA-8.5 | H-2 | LS-9 | No `jti` replay tracking |
-| UCA-10.1 | H-5 | LS-10 | No JWKS refetch on unknown `kid` |
+| UCA-8.5 (partly) | H-2 | LS-9 | JWT-SVID reuse allowed in the demo (SPIRE 1.15.3 agent SVID cache) |
 | UCA-10.5 (no test) | H-2 | LS-4 | No token exchange or `act` chain |
 | UCA-10.8 | H-3 | none listed | Not production software |
 | UCA-11.6 | H-2, H-3 | LS-5 | `--export-token-env` is opt in |
@@ -191,10 +189,10 @@ Each item turns a loss scenario into a scripted, repeatable result, like the fou
 
 | # | Scenario | Shows | Covers |
 |---|---|---|---|
-| 5 | Same-UID impostor: a second process under UID 1001 gets `agent/research` and a token | The limit of the Unix attestor; then the same run with a Docker or k8s attestor denying it | LS-1, UCA-3.2 |
-| 6 | Malicious PRM: notes-b names a rogue AS in `authorization_servers` | Client refuses once an issuer allowlist exists; today it proceeds | LS-3, UCA-7.4 |
-| 7 | SVID replay: the same JWT-SVID posted twice to `/token` | Two tokens today; `invalid_client` on the second once `jti` is tracked | LS-9, UCA-8.5 |
+| 5 | Label impostor: a second container with the `agent-research` label gets `agent/research` and a token | The limit of label selectors; then the same run with an image digest selector or the k8s attestor denying it | LS-1, UCA-3.2 |
+| 6 | Malicious PRM: notes-b names a rogue AS in `authorization_servers` | Client logs `issuer_refused` and fetches no SVID (covered offline in `test_issuer_allowlist.py`) | LS-3, UCA-7.4 |
+| 7 | SVID replay: the same JWT-SVID posted twice to `/token` | `invalid_client` on the second under `reject`; two tokens and one `svid_jti` in the audit under `allow-reuse-within-lifetime`. Needs a SPIRE agent that honours `-jwtSVIDIncludeJTI` cache bypass to run under `reject` | LS-9, UCA-8.5 |
 | 8 | Upstream call without passthrough: notes-a calls notes-b with its own SVID-based token, and a variant that forwards the caller token gets 401 at notes-b | Invariant 3 as an executable test, and the missing `act` chain | LS-4, UCA-10.5 |
 | 9 | Grant revocation: remove a grant during a run | Time from policy change to denial (restart plus up to 300s) | LS-8, UCA-2.4 |
 | 10 | Prompt-injected write: a note tells the agent to call `notes.write` | All checks pass under a read-write grant and fail under `notes:read` only; identity limits the blast radius but not intent | LS-7, UCA-5.1 |
-| 11 | authz restart: new signing key while servers cache the old JWKS | 60s of 401s; the fix is refetch on unknown `kid` | LS-10, UCA-10.1 |
+| 11 | authz restart: new signing key while servers cache the old JWKS | At most 10s of 401s, bounded by the refetch rate limit | LS-10, UCA-10.1 |
