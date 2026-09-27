@@ -23,7 +23,7 @@ Registration entries use `docker:label:org.example.svid.workload:<name>` selecto
 | 3 | `agent/intruder` | notes-a | valid SVID, not in `policy.yaml`, token request fails with `unauthorized_client` |
 | 4 | `agent/research` | token for notes-a sent to notes-b | 401 `invalid_token`, audit reason `InvalidAudienceError` |
 
-Commands, as run by `deploy/demo.sh`:
+Commands, as run by `deploy/demo.sh`. Each run also passes `--trusted-issuer http://authz:8100`, omitted below:
 
 ```sh
 # 1
@@ -38,7 +38,7 @@ mcp-svid-agent --resource http://notes-a:8101/mcp --scope "notes:read notes:writ
   --steal-token http://notes-b:8102/mcp
 ```
 
-In each run the agent calls `notes.search` and then `notes.write`, and prints one JSON event per step (`token`, `replay`, `call`, or `token_denied`).
+In each run the agent calls `notes.search` and then `notes.write`, and prints one JSON event per step (`token`, `replay`, `call`, `token_denied`, or `issuer_refused`).
 
 ## Result
 
@@ -64,4 +64,5 @@ The same behaviour is covered without SPIRE in `tests/`, using `LocalSvidIssuer`
 | `test_authz_hardening.py` | `iat` and SVID lifetime, fixed error strings, 503 on bundle failure, scope parsing, repeated parameters |
 | `test_resource_server.py` | Expiry, issuer, `typ`, ES256 pin, unknown tool, bad and oversized bodies, every tool declares a scope |
 | `test_stdio_wrapper.py` | Token file mode, refresh, fail closed, env export opt-in, cleanup |
+| `test_issuer_allowlist.py` | Trusted issuer allowlist: unknown and lookalike issuers refused before any SVID fetch, refusal event |
 | `test_no_identifiers.py` | Optional anonymization denylist |
