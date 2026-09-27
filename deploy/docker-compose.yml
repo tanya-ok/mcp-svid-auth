@@ -56,10 +56,14 @@ services:
     labels:
       org.example.svid.workload: authz
     user: "1010"
+    volumes:
+      - spire-sockets:/run/spire/sockets:ro
+      # demo.sh copies deploy/policy.yaml here; scenario 9 edits it while authz runs.
+      - ./.data/policy:/policy:ro
     command:
       - mcp-svid-authz
       - --issuer=http://authz:8100
-      - --policy=/app/deploy/policy.yaml
+      - --policy=/policy/policy.yaml
       - --host=0.0.0.0
       - --port=8100
       # The SPIRE 1.15.3 agent caches JWT-SVIDs even with -jwtSVIDIncludeJTI, so a workload gets the
@@ -79,6 +83,11 @@ services:
       - --issuer=http://authz:8100
       - --host=0.0.0.0
       - --port=8101
+      # notes.search_upstream calls notes-b with notes-a's own token (scenario 8).
+      - --upstream-resource=http://notes-b:8102/mcp
+      - --trusted-issuer=http://authz:8100
+      - --allow-http
+      - --allow-private-network
     depends_on: [authz]
 
   notes-b:
@@ -95,6 +104,22 @@ services:
       - --port=8102
     depends_on: [authz]
 
+  # Scenario 6: a resource whose Protected Resource Metadata names an authorization server the
+  # agents do not trust. It never needs an SVID.
+  notes-rogue:
+    <<: *workload
+    labels:
+      org.example.svid.workload: notes-rogue
+    user: "1013"
+    profiles: [scenarios]
+    command:
+      - mcp-svid-notes
+      - --name=notes-rogue
+      - --resource=http://notes-rogue:8103/mcp
+      - --issuer=http://rogue-as:8100
+      - --host=0.0.0.0
+      - --port=8103
+
   agent-research:
     <<: *workload
     labels:
@@ -108,6 +133,15 @@ services:
     labels:
       org.example.svid.workload: agent-intruder
     user: "1002"
+    profiles: [agents]
+    entrypoint: ["mcp-svid-agent"]
+
+  # Scenario 5: a different container that carries the agent-research label.
+  agent-impostor:
+    <<: *workload
+    labels:
+      org.example.svid.workload: agent-research
+    user: "1003"
     profiles: [agents]
     entrypoint: ["mcp-svid-agent"]
 

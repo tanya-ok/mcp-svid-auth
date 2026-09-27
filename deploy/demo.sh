@@ -13,7 +13,8 @@ B="http://notes-b:8102/mcp"
 AUTHZ="http://authz:8100"
 server() { docker compose exec -T spire-server /opt/spire/bin/spire-server "$@"; }
 
-mkdir -p .data
+mkdir -p .data/policy
+cp policy.yaml .data/policy/policy.yaml
 echo "== SPIRE server"
 docker compose up -d --wait spire-server
 server bundle show > .data/bundle.pem
@@ -57,8 +58,83 @@ echo "== 4. replay: token issued for notes-a sent to notes-b (401, wrong audienc
 run agent-research --resource "$A" --scope "notes:read notes:write" --steal-token "$B"
 
 echo
-echo "== audit lines"
-docker compose logs --no-log-prefix authz notes-a notes-b | grep '"decision"' || true
+echo "== 5. impostor: another container with the agent-research label gets agent/research"
+run agent-impostor --resource "$A" --scope notes:read --call 'notes.search={"query":"welcome"}'
 
 echo
-echo "Tear down with: docker compose -f deploy/docker-compose.yml down -v"
+echo "== 6. malicious PRM: notes-rogue names an untrusted authorization server (issuer_refused)"
+docker compose --profile scenarios up -d notes-rogue
+sleep 2
+run agent-research --resource http://notes-rogue:8103/mcp --scope notes:read
+
+echo
+echo "== 7. SVID replay: one JWT-SVID posted to /token twice"
+docker compose run --rm --no-deps -T --entrypoint python agent-research - <<'PY' || true
+import json
+
+import httpx2
+from spiffe import WorkloadApiClient
+
+client = WorkloadApiClient()
+svid = client.fetch_jwt_svid(audience={"http://authz:8100"}).token
+client.close()
+form = {
+    "grant_type": "client_credentials",
+    "client_assertion_type": "urn:ietf:params:oauth:client-assertion-type:jwt-spiffe",
+    "client_assertion": svid,
+    "resource": "http://notes-a:8101/mcp",
+    "scope": "notes:read",
+}
+for attempt in (1, 2):
+    response = httpx2.post("http://authz:8100/token", data=form)
+    body = response.json()
+    print(json.dumps({"event": "svid_replay", "attempt": attempt, "status": response.status_code,
+                      "error": body.get("error"), "token_issued": "access_token" in body}))
+PY
+
+echo
+echo "== 8. upstream call: notes-a calls notes-b with its own token, never the caller's"
+run agent-research --resource "$A" --scope notes:read \
+  --call 'notes.search_upstream={"query":"welcome"}'
+docker compose logs --no-log-prefix notes-b | grep '"spiffe://example.org/mcp/notes-a"' | tail -1 || true
+
+echo
+echo "== 9. grant revocation: remove agent/research's notes-b grant while authz runs"
+run agent-research --resource "$B" --scope notes:read --call 'notes.search={"query":"welcome"}'
+cat > .data/policy/policy.yaml <<'YAML'
+trust_domain: example.org
+clients:
+  - spiffe_id: spiffe://example.org/agent/research
+    resources:
+      http://notes-a:8101/mcp: [notes:read, notes:write]
+  - spiffe_id: spiffe://example.org/mcp/notes-a
+    resources:
+      http://notes-b:8102/mcp: [notes:read]
+YAML
+echo "policy edited at $(date -u +%H:%M:%S) UTC"
+sleep 7
+run agent-research --resource "$B" --scope notes:read --call 'notes.search={"query":"welcome"}'
+docker compose logs --no-log-prefix authz | grep '"policy_reload"' | tail -1 || true
+cp policy.yaml .data/policy/policy.yaml
+sleep 7
+
+echo
+echo "== 11. authz restart: new signing key while notes-a caches the old JWKS"
+docker compose restart authz
+sleep 3
+run agent-research --resource "$A" --scope notes:read --call 'notes.search={"query":"welcome"}'
+
+echo
+echo "== audit lines"
+docker compose logs --no-log-prefix authz notes-a notes-b notes-rogue | grep '"decision"' || true
+
+echo
+echo "== audit hash chain of notes-a and notes-b (stderr, one chain per process)"
+for svc in notes-a notes-b; do
+  docker compose logs --no-log-prefix "$svc" | grep '^{"record_id"' |
+    docker compose run --rm --no-deps -T --entrypoint mcp-svid-audit-verify agent-research /dev/stdin |
+    sed "s|^/dev/stdin|$svc|" || true
+done
+
+echo
+echo "Tear down with: make down"

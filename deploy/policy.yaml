@@ -6,4 +6,8 @@ clients:
     resources:
       http://notes-a:8101/mcp: [notes:read, notes:write]
       http://notes-b:8102/mcp: [notes:read]
+  # notes-a calls notes-b with its own token for notes.search_upstream.
+  - spiffe_id: spiffe://example.org/mcp/notes-a
+    resources:
+      http://notes-b:8102/mcp: [notes:read]
 # spiffe://example.org/agent/intruder has a valid SVID but is deliberately not listed.

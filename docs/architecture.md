@@ -34,7 +34,7 @@ flowchart LR
 | `policy` | none | Allowlist of SPIFFE ID, resource and scopes. |
 | `audit` | `mcp-svid-audit-verify` | One hash-chained JSON line per decision, to a file or stderr, and the chain verifier. |
 | `spiffe_keys` | none | JWT-SVID source and key resolver: Workload API, or a static JWKS for tests. |
-| `deploy/` | `make demo` | SPIRE server and agent 1.15.3, registration entries, the three services, four scenarios. |
+| `deploy/` | `make demo` | SPIRE server and agent 1.15.3, registration entries, the services, ten scenarios. |
 
 ## Upstream calls without token passthrough
 

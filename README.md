@@ -70,7 +70,7 @@ sequenceDiagram
 | `mcp_server` | `mcp-svid-notes` | MCP server over Streamable HTTP. Tools `notes.search` (`notes:read`) and `notes.write` (`notes:write`); with `--upstream-resource` also `notes.search_upstream` (`notes:read`), which calls another MCP server with the server's own token. |
 | `agent_client` | `mcp-svid-agent` | Discovers the authorization server, refuses it unless it is on the `--trusted-issuer` allowlist, fetches its SVID, gets a token, calls tools. `--steal-token` replays a token against another server. |
 | `stdio_wrapper` | `mcp-svid-stdio` | Starts a local stdio MCP server with `MCP_ACCESS_TOKEN_FILE` (0600, refreshed). Fails closed on expiry. `--export-token-env` also sets `MCP_ACCESS_TOKEN` and stops the child when it expires (weaker, see below). |
-| `deploy/` | `make demo` | SPIRE server and agent 1.15.3 (pinned by digest), registration entries, the three services, four scenarios. |
+| `deploy/` | `make demo` | SPIRE server and agent 1.15.3 (pinned by digest), registration entries, the services, ten scenarios. |
 
 Token request, as sent by the agent:
 
@@ -110,6 +110,12 @@ Optional local anonymization denylist: put one term per line in `tests/denylist.
 | 2 | `agent/research` | notes-b | token with `notes:read`, `notes.write` gets 403 `insufficient_scope` |
 | 3 | `agent/intruder` | notes-a | valid SVID, not in `policy.yaml`, token request fails with `unauthorized_client` |
 | 4 | `agent/research` | token for notes-a sent to notes-b | 401 `invalid_token`, audit reason `InvalidAudienceError` |
+| 5 | `agent-impostor` container with the `agent-research` label | notes-a | gets `agent/research` and a token: the label is the identity (LS-1) |
+| 6 | `agent/research` | notes-rogue, whose PRM names `http://rogue-as:8100` | `issuer_refused`, no SVID fetched (LS-3) |
+| 7 | `agent/research`, one JWT-SVID posted twice to `/token` | authz | two tokens under `allow-reuse-within-lifetime` (LS-9) |
+| 8 | `agent/research` calls `notes.search_upstream` | notes-a, which calls notes-b | notes-b audits `mcp/notes-a`, not the caller; scenario 4 is the forwarding variant (LS-4) |
+| 9 | `agent/research`, grant for notes-b removed while authz runs | notes-b | `invalid_target` after the next policy reload (LS-8) |
+| 11 | `agent/research` after `docker compose restart authz` | notes-a | new signing key accepted at once via the unknown-`kid` refetch (LS-10) |
 
 Audit line example:
 
@@ -150,7 +156,7 @@ Denials before the signature check prefix the SPIFFE ID with `unverified:`.
 | Item | State |
 |---|---|
 | Offline tests | Pass (`make check`) |
-| `make demo` against SPIRE 1.15.3 | Pass on 2026-09-27 with the docker workload attestor (label selectors), `--trusted-issuer`, and `--svid-replay=allow-reuse-within-lifetime`, Docker Desktop 29.6.1 on macOS, cgroup v2. All four scenarios behave as in the table above. A container with an unregistered label, or none, gets `PERMISSION_DENIED` from the Workload API. |
+| `make demo` against SPIRE 1.15.3 | Pass on 2026-09-27 with the docker workload attestor (label selectors), `--trusted-issuer`, and `--svid-replay=allow-reuse-within-lifetime`, Docker Desktop 29.6.1 on macOS, cgroup v2. All ten scenarios behave as in the table above (second run on 2026-09-27 after the threat model scenarios were added; agents use `--allow-http --allow-private-network`). A container with an unregistered label, or none, gets `PERMISSION_DENIED` from the Workload API. |
 | `--svid-replay reject` against SPIRE 1.15.3 | Not usable yet. The agent re-serves a cached SVID with the same `jti`, so the second token request from a workload gets `client assertion replayed` (tested 2026-09-27). Default stays `reject`; the demo opts out explicitly. |
 | stdio wrapper | Minimal. Children must re-read `MCP_ACCESS_TOKEN_FILE` per upstream call. |
 

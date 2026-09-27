@@ -47,7 +47,7 @@ make down
 2. Generates a join token and starts the SPIRE agent.
 3. Registers five workloads by container label (`deploy/register.sh`).
 4. Builds and starts `authz`, `notes-a` and `notes-b`.
-5. Runs the four [demo scenarios](demo.md) and prints the audit lines.
+5. Runs the ten [demo scenarios](demo.md), prints the audit lines and verifies the notes-a and notes-b audit chains.
 
 `make down` removes the compose stack and its volumes.
 

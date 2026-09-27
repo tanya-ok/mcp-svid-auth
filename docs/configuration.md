@@ -77,6 +77,7 @@ Agent that authenticates with its JWT-SVID
 | `--allow-private-network` | off | Dev only: accept hosts that resolve to private, loopback or link-local addresses |
 | `--spiffe-id` | none | Sent as client_id |
 | `--socket` | none | Workload API socket, default SPIFFE_ENDPOINT_SOCKET |
+| `--call` | none | Tool to call with JSON arguments; repeatable; default notes.search then notes.write |
 | `--steal-token` | none | Demo: send the token issued for --resource to OTHER_RESOURCE instead |
 
 ## `mcp-svid-stdio`
@@ -127,6 +128,10 @@ clients:
   - spiffe_id: spiffe://example.org/agent/research
     resources:
       http://notes-a:8101/mcp: [notes:read, notes:write]
+      http://notes-b:8102/mcp: [notes:read]
+  # notes-a calls notes-b with its own token for notes.search_upstream.
+  - spiffe_id: spiffe://example.org/mcp/notes-a
+    resources:
       http://notes-b:8102/mcp: [notes:read]
 # spiffe://example.org/agent/intruder has a valid SVID but is deliberately not listed.
 ```

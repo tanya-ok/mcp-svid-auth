@@ -210,3 +210,15 @@ def test_agent_logs_refusal(
         "issuers": ["http://attacker.test"],
     }
     assert source.audiences == []
+
+
+def test_agent_call_flag() -> None:
+    base = ["--resource", SERVER_A, "--scope", "s", "--trusted-issuer", ISSUER]
+    args = agent_client.build_parser().parse_args(
+        [*base, "--call", 'notes.search_upstream={"query": "x"}', "--call", "notes.search"]
+    )
+    assert args.call == [("notes.search_upstream", {"query": "x"}), ("notes.search", {})]
+    assert agent_client.build_parser().parse_args(base).call is None
+    for bad in ["=1", "t=[1]", "t={bad"]:
+        with pytest.raises(SystemExit):
+            agent_client.build_parser().parse_args([*base, "--call", bad])

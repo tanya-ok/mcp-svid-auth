@@ -291,13 +291,27 @@ async def run(args: argparse.Namespace) -> int:
     target = args.steal_token or args.resource
     if args.steal_token:
         print(json.dumps({"event": "replay", "issued_for": args.resource, "sent_to": target}))
-    for tool, arguments in (
-        ("notes.search", {"query": "welcome"}),
-        ("notes.write", {"text": "hello from the agent"}),
-    ):
+    for tool, arguments in args.call or DEFAULT_CALLS:
         outcome = await call_tool(target, token["access_token"], tool, arguments, url_policy=urls)
         print(json.dumps({"event": "call", "server": target, "tool": tool, "result": outcome}))
     return 0
+
+
+DEFAULT_CALLS: list[tuple[str, dict[str, Any]]] = [
+    ("notes.search", {"query": "welcome"}),
+    ("notes.write", {"text": "hello from the agent"}),
+]
+
+
+def call_arg(value: str) -> tuple[str, dict[str, Any]]:
+    tool, sep, raw = value.partition("=")
+    try:
+        arguments = json.loads(raw) if sep else {}
+    except ValueError:
+        raise argparse.ArgumentTypeError("arguments must be a JSON object") from None
+    if not tool or not isinstance(arguments, dict):
+        raise argparse.ArgumentTypeError("expected TOOL or TOOL={json object}")
+    return tool, arguments
 
 
 def issuer_arg(value: str) -> str:
@@ -350,6 +364,13 @@ def build_parser() -> argparse.ArgumentParser:
     add_url_flags(parser)
     parser.add_argument("--spiffe-id", help="sent as client_id")
     parser.add_argument("--socket", help="Workload API socket, default SPIFFE_ENDPOINT_SOCKET")
+    parser.add_argument(
+        "--call",
+        action="append",
+        type=call_arg,
+        metavar="TOOL=JSON",
+        help="tool to call with JSON arguments; repeatable; default notes.search then notes.write",
+    )
     parser.add_argument(
         "--steal-token",
         metavar="OTHER_RESOURCE",

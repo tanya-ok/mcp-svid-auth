@@ -140,7 +140,7 @@ Links go to the source on `main`. "Not mitigated" names the matching non-goal or
 | UCA | Status | Mechanism | Evidence |
 |---|---|---|---|
 | UCA-1.1, 2.1, 3.1, 4.1, 8.1, 11.1 | Accepted (fail closed) | Missing identity, grant or bundle gives a fixed-string error, never a fallback credential | [`test_bundle_lookup_failure_is_503_without_detail`](https://github.com/tanya-ok/mcp-svid-auth/blob/main/tests/test_authz_hardening.py), [`test_cleanup_when_first_fetch_fails`](https://github.com/tanya-ok/mcp-svid-auth/blob/main/tests/test_stdio_wrapper.py) |
-| UCA-1.2, 3.2 | Partly | docker attestor binds identity to a container label, not a UID. Anyone who can start containers on the host can set any label, and the SPIRE agent holds the Docker socket | Demo: an unregistered or missing label gets `PERMISSION_DENIED`; [`deploy/spire/agent.conf`](https://github.com/tanya-ok/mcp-svid-auth/blob/main/deploy/spire/agent.conf). Known gaps "Label selectors" and "Docker socket in the SPIRE agent" |
+| UCA-1.2, 3.2 | Partly | docker attestor binds identity to a container label, not a UID. Anyone who can start containers on the host can set any label, and the SPIRE agent holds the Docker socket | Demo: an unregistered or missing label gets `PERMISSION_DENIED`; demo scenario 5 shows a second container with the label getting the identity; [`deploy/spire/agent.conf`](https://github.com/tanya-ok/mcp-svid-auth/blob/main/deploy/spire/agent.conf). Known gaps "Label selectors" and "Docker socket in the SPIRE agent" |
 | UCA-1.3, 3.5 | Mitigated | authz rejects SVIDs with `exp - iat` above `--max-svid-lifetime` (300s) and SVIDs without `iat` | [`authz.py`](https://github.com/tanya-ok/mcp-svid-auth/blob/main/src/mcp_svid_auth/authz.py), [`test_svid_lifetime_above_max_rejected`, `test_svid_without_iat_rejected`](https://github.com/tanya-ok/mcp-svid-auth/blob/main/tests/test_authz_hardening.py) |
 | UCA-1.4, 1.5, 2.5 | Not mitigated | Operator process. Entries and policy have no review or expiry flow | Known gap "Over-broad access: policy is a local file" |
 | UCA-2.2 | Partly | Per SPIFFE ID, per resource, per scope allowlist. Breadth is the operator's choice | [`policy.py`](https://github.com/tanya-ok/mcp-svid-auth/blob/main/src/mcp_svid_auth/policy.py), [`test_resource_not_allowed_for_client`](https://github.com/tanya-ok/mcp-svid-auth/blob/main/tests/test_authz.py) |
@@ -181,16 +181,16 @@ Links go to the source on `main`. "Not mitigated" names the matching non-goal or
 | UCA-8.5 (partly) | H-2 | LS-9 | JWT-SVID reuse allowed in the demo (SPIRE 1.15.3 agent SVID cache) |
 | UCA-10.8 (partly) | H-3 | none listed | Tools without their own expiry re-check can finish a side effect after `exp` |
 
-## 6. Next demo scenarios
+## 6. Demo scenarios from this analysis
 
-Each item turns a loss scenario into a scripted, repeatable result, like the four in [Demo scenarios](demo.md).
+Each item turns a loss scenario into a scripted, repeatable result, next to the four base scenarios in [Demo scenarios](demo.md). All except 10 run in `make demo` (checked 2026-09-27).
 
-| # | Scenario | Shows | Covers |
+| # | Scenario | Result | Covers |
 |---|---|---|---|
-| 5 | Label impostor: a second container with the `agent-research` label gets `agent/research` and a token | The limit of label selectors; then the same run with an image digest selector or the k8s attestor denying it | LS-1, UCA-3.2 |
-| 6 | Malicious PRM: notes-b names a rogue AS in `authorization_servers` | Client logs `issuer_refused` and fetches no SVID (covered offline in `test_issuer_allowlist.py`) | LS-3, UCA-7.4 |
-| 7 | SVID replay: the same JWT-SVID posted twice to `/token` | `invalid_client` on the second under `reject`; two tokens and one `svid_jti` in the audit under `allow-reuse-within-lifetime`. Needs a SPIRE agent that honours `-jwtSVIDIncludeJTI` cache bypass to run under `reject` | LS-9, UCA-8.5 |
-| 8 | Upstream call without passthrough: notes-a calls notes-b with its own SVID-based token, and a variant that forwards the caller token gets 401 at notes-b | Invariant 3 as an executable test, and the missing `act` chain | LS-4, UCA-10.5 |
-| 9 | Grant revocation: remove a grant during a run | Time from policy change to denial (restart plus up to 300s) | LS-8, UCA-2.4 |
-| 10 | Prompt-injected write: a note tells the agent to call `notes.write` | All checks pass under a read-write grant and fail under `notes:read` only; identity limits the blast radius but not intent | LS-7, UCA-5.1 |
-| 11 | authz restart: new signing key while servers cache the old JWKS | At most 10s of 401s, bounded by the refetch rate limit | LS-10, UCA-10.1 |
+| 5 | Label impostor: a second container with the `agent-research` label | Gets `agent/research` and a token, and even the same cached SVID. Shows the limit of label selectors; an image digest selector or the k8s attestor would be needed to deny it | LS-1, UCA-3.2 |
+| 6 | Malicious PRM: notes-rogue names a rogue AS in `authorization_servers` | Client logs `issuer_refused` and fetches no SVID | LS-3, UCA-7.4 |
+| 7 | SVID replay: the same JWT-SVID posted twice to `/token` | Two tokens under `allow-reuse-within-lifetime`, the mode the SPIRE 1.15.3 agent forces; `invalid_client` on the second under `reject` (offline test) | LS-9, UCA-8.5 |
+| 8 | Upstream call without passthrough: notes-a calls notes-b with its own token | notes-b audits `mcp/notes-a`; the forwarding variant is scenario 4 (401) | LS-4, UCA-10.5 |
+| 9 | Grant revocation: remove a grant during a run | `invalid_target` after the next reload (0.9s and 5.0s in two runs, poll 5s); issued tokens live until `exp` | LS-8, UCA-2.4 |
+| 10 | Prompt-injected write: a note tells the agent to call `notes.write` | Not scripted. Out of scope for identity: all checks pass under a read-write grant; `notes:read` only limits the blast radius | LS-7, UCA-5.1 |
+| 11 | authz restart: new signing key while servers cache the old JWKS | No 401: the unknown `kid` refetch picks up the new key at once, bounded by the 10s refetch rate limit | LS-10, UCA-10.1 |
