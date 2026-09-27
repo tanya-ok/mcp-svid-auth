@@ -16,6 +16,7 @@ nav = [
   { "Architecture" = "architecture.md" },
   { "Demo scenarios" = "demo.md" },
   { "Security model" = "security.md" },
+  { "Threat model (STPA-Sec)" = "threat-model.md" },
   { "stdio wrapper" = "stdio-wrapper.md" },
   { "Configuration" = "configuration.md" },
   { "References" = "references.md" },
