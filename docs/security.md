@@ -110,7 +110,7 @@ Time to denial after a grant is removed:
 | Granted scopes include the tool scope | 403 `insufficient_scope` with `WWW-Authenticate` | Per-tool least privilege |
 | `tools/list` shows only tools whose scope was granted | tool omitted | A read-only token does not see `notes.write` |
 | A `tools/call` still running at the token `exp` | 401 `invalid_token`, audit `token_expired_during_call` | No tool result is returned on an expired token |
-| `notes.write` re-checks the token `exp` just before it stores | Tool error `access token expired`, nothing stored | A state change never happens after the token expired, even if the call started before |
+| `notes.write` re-checks the token `exp` just before it stores | Tool error `access token expired`, nothing stored | `notes.write` does not store after the token expired, apart from the short window between the check and the write. Other async tools may keep running after the 401, since the server is stateless and does not cancel them |
 
 `build_mcp` also refuses to start if any registered tool has no declared scope.
 
@@ -131,7 +131,8 @@ Time to denial after a grant is removed:
 | JWT-SVID reuse allowed in the demo | `allow-reuse-within-lifetime`: a stolen SVID mints tokens until it expires (max 300s). Needed because the SPIRE 1.15.3 agent re-serves cached SVIDs. | `deploy/docker-compose.yml` |
 | JWT-SVID seen-set per process | `reject` mode only. Replicas or a restart forget seen `jti` values. | `ReplayCache` |
 | Signing key in memory | Rotates only on restart. | `AuthzServer.signing_key` |
-| Audit chain not anchored | Edits, deletions and reordering are detected, but a writer with file access can rebuild the chain after an edit. No signing or external anchor. | `audit.py` |
+| Audit chain not anchored | Edits, deletions inside the file and reordering are detected, but deleting lines from the end (tail truncation) is not, and a writer with file access can rebuild the chain after an edit. No signing or external anchor. | `audit.py` |
+| Upstream widens read access | `notes.search_upstream` on notes-a lets any caller with `notes:read` on notes-a read notes-b under notes-a's own grant, even without a notes-b grant (confused deputy widening). Fix pending a delegation chain. | `mcp_server.Upstream` |
 | Plain HTTP | No TLS inside the compose network. The demo agents run with `--allow-http --allow-private-network`. | `deploy/docker-compose.yml`, `deploy/demo.sh` |
 | DNS rebinding | The URL check and the HTTP client resolve the host separately. A name that changes answer between the two lookups can still reach a private address. | `agent_client.UrlPolicy` |
 

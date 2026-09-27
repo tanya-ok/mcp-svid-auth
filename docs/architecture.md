@@ -138,12 +138,12 @@ Without `--audit-log` the lines go to stderr.
 
 ### Hash chain
 
-Each file is one chain, built as in [draft-sharif-agent-audit-trail-05](https://datatracker.ietf.org/doc/draft-sharif-agent-audit-trail/) (checked 2026-09-27): `prev_hash(N) = hex(SHA-256(JCS(record N-1)))`, and `parent_record_id` links to the previous `record_id`. The field set is this project's own, not the full AAT record. A process that opens an existing file continues its chain from the last line, and refuses to write if that line does not parse. One writer per file.
+Each file is one chain, built as in [draft-sharif-agent-audit-trail-05](https://datatracker.ietf.org/doc/draft-sharif-agent-audit-trail/) (checked 2026-09-27): `prev_hash(N) = hex(SHA-256(JCS(record N-1)))`, and `parent_record_id` links to the previous `record_id`. The field set is this project's own, not the full AAT record. A process that opens an existing file continues its chain from the last line, and refuses every write while that line does not parse or lacks its trailing newline. One writer per file.
 
 ```sh
 mcp-svid-audit-verify authz.jsonl notes-a.jsonl
 ```
 
-The verifier recomputes every link and reports edited, deleted, reordered or inserted lines and timestamps that go backwards. Exit code 0 means every chain is intact.
+The verifier recomputes every link and reports edited, deleted, reordered or inserted lines and timestamps that go backwards. Exit code 0 means every chain is intact. Deleting lines from the end of a file (tail truncation) is not detected, because the chain has no external anchor for its last record.
 
-The chain is tamper-evident, not tamper-proof: anyone who can write the file can rewrite the whole chain from the edited line on. Anchoring the last hash elsewhere, or signing records, is not implemented.
+The chain is tamper-evident, not tamper-proof: anyone who can write the file can rewrite the whole chain from the edited line on. Anchoring the last hash elsewhere, or signing records, is not implemented, so truncation from the end goes unnoticed.
