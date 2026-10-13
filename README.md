@@ -116,9 +116,10 @@ make runtime-stop # release VM CPU/memory only when no sibling project needs it
 
 For the lab's read-only interface, run `make ui` and open [Security lab](http://127.0.0.1:4466/c/main/security-lab). It shows services, trust relationships, permissions, safe audit outcomes and the latest demo verdicts. See [Headlamp interface](docs/headlamp-ui.md) for access limits and shutdown commands.
 
-`make down` removes only owned Security Lab resources. If CISO Assistance or
-another project shares this VM, retain the VM instead of running
-`make runtime-stop`.
+`make down` removes only owned Security Lab resources. If another project shares
+this VM, retain the VM instead of running `make runtime-stop`. IT GRC (`it-grc`,
+not yet public) runs CISO Assistant Community edition in its own Lima VM, not in
+this lab, and takes the lab's demo report as its input.
 
 ## Demo scenarios
 

@@ -25,7 +25,8 @@ Every project needs all of the following:
 
 The baseline below was checked on 2026-10-07. The 2026-10-12 follow-up section
 records subsequent package and workflow verification; it is not a rerun of every
-original acceptance check.
+original acceptance check. The `ciso-assistance` project in these dated records
+was later renamed IT GRC.
 
 | Project | Beads | Verified locally | Remaining gate |
 |---|---|---|---|
@@ -101,10 +102,13 @@ scans returned zero findings. These checks are identifier evidence only.
 ## Owner decisions
 
 Updated on 2026-10-13. Publication of the `codex/kubernetes-security-lab` branch
-and of the bridge remains a separate maintainer decision. CISO Assistance is
-licensed under Apache-2.0. The ECS live deployment and teardown passed on a
-personal account. Native Claude Desktop installation of the FHIR bundle was
-verified. See each repository's readiness page for the evidence.
+and of the bridge remains a separate maintainer decision. CISO Assistance was
+renamed IT GRC (`it-grc`, not yet public) and is licensed under Apache-2.0. It
+runs the unmodified CISO Assistant Community edition in its own Lima VM, not in
+the security lab, and takes the lab demo report as input. The ECS live
+deployment and teardown passed on a personal account. Native Claude Desktop
+installation of the FHIR bundle was verified. See each repository's readiness
+page for the evidence.
 
 ## Publication handoff
 

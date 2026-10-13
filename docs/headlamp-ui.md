@@ -110,9 +110,9 @@ are generated at runtime and expire after two days. Recreate an expired or
 incomplete profile with `make ui-login-down` followed by `make ui-login`.
 `make ui-stop` closes all owned UI/identity forwards but keeps the profile.
 `make down` removes all three owned namespaces and the local account files;
-`make runtime-stop` releases the VM memory; skip it while CISO Assistance or
-another sibling project uses the VM. Identity backend loss stops the
-viewer rather than bypassing login.
+`make runtime-stop` releases the VM memory; skip it while another sibling
+project uses the VM. IT GRC runs in its own Lima VM and does not depend on this
+one. Identity backend loss stops the viewer rather than bypassing login.
 
 The identity acceptance gate must verify real WebAuthn for both synthetic
 accounts, required user verification, password denial, PKCE exchange, an opaque

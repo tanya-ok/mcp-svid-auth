@@ -54,12 +54,14 @@ are staged; no Git history, task databases or credentials are copied.
 | mcp-svid-auth | Python checks and CLI | Shared Lima/k3s/containerd lab |
 | mcp-spiffe-bridge (not yet published) | Node.js library and TLS demo | Embedded in the shared FHIR gateway |
 | hipaa-fhir-mcp | Node.js stdio and Desktop bundle | Shared FHIR namespace |
-| ciso-assistance | Python application, host Ollama | Optional CISO namespace in the same VM |
+| it-grc (not yet public) | Python standard-library bridge and CLI | CISO Assistant CE on k3s in its own `it-grc` Lima VM |
 | ecs-contract | Independent Python CLI and AWS ECS | Separate `ecs-contract` Lima/containerd VM |
 | engineering-os | Node.js retrieval and dashboard, local Beads | No container required |
 
 Host-native workflows stay host-native. ECS Contract has its own VM and lifecycle,
-with no Kubernetes or security-lab dependency. All local application containers use
-containerd; no Docker or Podman daemon is required. ECS remains an AWS deployment
+with no Kubernetes or security-lab dependency. IT GRC also has its own VM and
+lifecycle; it reads a saved lab demo report and does not use the security-lab VM.
+All local application containers use containerd; no Docker or Podman daemon is
+required. ECS remains an AWS deployment
 target rather than being replaced by Kubernetes. Every teardown targets only
 resources owned by its project or run.

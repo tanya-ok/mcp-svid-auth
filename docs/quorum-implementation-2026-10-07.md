@@ -4,6 +4,7 @@ User-authorized scope: implement the recommendations in the six-project quorum,
 resolve disputed decisions with evidence and use additional provider review when
 needed. The original review remains an immutable historical record. This ledger
 tracks implementation and does not substitute passing local checks for live gates.
+The `ciso-assistance` project was later renamed IT GRC.
 
 | Work | Beads | Status and required evidence |
 |---|---|---|

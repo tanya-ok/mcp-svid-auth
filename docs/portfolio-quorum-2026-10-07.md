@@ -3,6 +3,7 @@
 Focused run: `20261007T123322520415Z`. Status: complete for the declared focused source selections.
 The preceding broad run `20261007T122242280168Z` timed out on the first
 research stage and was cancelled before repeating the same failure elsewhere.
+The `ciso-assistance` project was later renamed IT GRC.
 
 The review uses saved working-tree packets with per-file hashes. A source quote
 is checked mechanically; agreement is not proof of a defect. Claude researches,
