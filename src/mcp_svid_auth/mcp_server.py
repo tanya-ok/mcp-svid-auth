@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import contextlib
+import hashlib
 import json
 import time
 from collections.abc import AsyncIterator, Callable
@@ -65,6 +66,7 @@ from mcp_svid_auth.agent_client import (
     url_policy_from_args,
 )
 from mcp_svid_auth.audit import AuditLog
+from mcp_svid_auth.budgets import WindowBudget
 from mcp_svid_auth.spiffe_keys import SvidSource, WorkloadApiSvidSource
 
 JWKS_CACHE_SECONDS = 60
@@ -72,10 +74,18 @@ JWKS_MIN_REFETCH_SECONDS = 10
 _ACCESS_TOKEN_ALGS = ["ES256"]
 _ACCESS_TOKEN_TYP = "at+jwt"  # noqa: S105 - media type, not a secret
 MAX_BODY_BYTES = 1024 * 1024
+MAX_ACCESS_TOKEN_BYTES = 8192
+MAX_JWKS_BYTES = 65_536
+MAX_JWKS_KEYS = 16
+DEFAULT_TOKEN_VERIFICATIONS_PER_SECOND = 256
 
 
 class JwksUnavailableError(Exception):
     """The authorization server JWKS could not be fetched."""
+
+
+class JwksInvalidError(Exception):
+    """The authorization server JWKS has no usable keys or a malformed key."""
 
 
 class JwksSource(Protocol):
@@ -114,6 +124,8 @@ class JwksFetcher:
     async def get(self, *, refresh: bool = False) -> dict[str, Any]:
         async with self._lock:
             if self._cached is None or self.clock() - self._fetched_at > JWKS_CACHE_SECONDS:
+                if not self._may_refetch():
+                    raise JwksUnavailableError("JWKS retry budget exceeded")
                 return await self._fetch()
             if refresh and self._may_refetch():
                 return await self._fetch()
@@ -128,16 +140,25 @@ class JwksFetcher:
     async def _fetch(self) -> dict[str, Any]:
         self._attempted_at = self.clock()
         try:
-            async with httpx2.AsyncClient(
-                transport=self.transport, timeout=5, follow_redirects=False
-            ) as client:
-                response = await client.get(self.jwks_uri)
+            async with (
+                httpx2.AsyncClient(
+                    transport=self.transport, timeout=5, follow_redirects=False
+                ) as client,
+                client.stream("GET", self.jwks_uri) as response,
+            ):
                 response.raise_for_status()
-                jwks = response.json()
+                content = bytearray()
+                async for chunk in response.aiter_bytes():
+                    if len(content) + len(chunk) > MAX_JWKS_BYTES:
+                        raise JwksUnavailableError("JWKS response too large")
+                    content.extend(chunk)
+                jwks = json.loads(content)
         except (httpx2.HTTPError, ValueError) as exc:
             raise JwksUnavailableError(type(exc).__name__) from exc
         if not isinstance(jwks, dict) or not isinstance(jwks.get("keys"), list):
             raise JwksUnavailableError("not a JWKS")
+        if len(jwks["keys"]) > MAX_JWKS_KEYS:
+            raise JwksUnavailableError("too many JWKS keys")
         self._cached = jwks
         self._fetched_at = self._attempted_at
         return jwks
@@ -152,12 +173,30 @@ class AudienceBoundVerifier:
     jwks: JwksSource
     audit: AuditLog
 
+    budget: WindowBudget = field(
+        default_factory=lambda: WindowBudget(DEFAULT_TOKEN_VERIFICATIONS_PER_SECOND, max_keys=1)
+    )
+
     async def verify_token(self, token: str) -> AccessToken | None:
+        if not self.budget.take():
+            self.audit.write(
+                spiffe_id=None, tool=None, decision="deny", reason="verification_budget_exceeded"
+            )
+            return None
+        if len(token) > MAX_ACCESS_TOKEN_BYTES or not token.isascii():
+            self.audit.write(
+                spiffe_id=None, tool=None, decision="deny", reason="invalid_token_size_or_encoding"
+            )
+            return None
         try:
             header = jwt.get_unverified_header(token)
+            if header.get("alg") not in _ACCESS_TOKEN_ALGS:
+                raise jwt.InvalidAlgorithmError("unsupported access token algorithm")
             if header.get("typ") != _ACCESS_TOKEN_TYP:
                 raise jwt.InvalidTokenError(f"typ must be {_ACCESS_TOKEN_TYP}")
             kid = header.get("kid")
+            if not isinstance(kid, str) or not 0 < len(kid) <= 128:
+                raise jwt.InvalidTokenError("invalid key identifier")
             key = _find_key(await self.jwks.get(), kid)
             if key is None:
                 key = _find_key(await self.jwks.get(refresh=True), kid)
@@ -171,20 +210,30 @@ class AudienceBoundVerifier:
                 issuer=self.issuer,
                 options={"require": ["iss", "sub", "aud", "exp", "iat", "scope"]},
             )
+            if claims["aud"] not in (self.resource, [self.resource]):
+                raise jwt.InvalidAudienceError("audience must name this resource only")
         except jwt.PyJWTError as exc:
             self.audit.write(
                 spiffe_id=_unverified_sub(token),
                 tool=None,
                 decision="deny",
-                reason=f"invalid_token: {type(exc).__name__}: {exc}",
+                reason=f"invalid_token: {type(exc).__name__}",
             )
             return None
-        except JwksUnavailableError as exc:
+        except JwksUnavailableError:
             self.audit.write(
                 spiffe_id=_unverified_sub(token),
                 tool=None,
                 decision="deny",
-                reason=f"jwks_unavailable: {exc}",
+                reason="jwks_unavailable",
+            )
+            return None
+        except JwksInvalidError:
+            self.audit.write(
+                spiffe_id=_unverified_sub(token),
+                tool=None,
+                decision="deny",
+                reason="jwks_invalid",
             )
             return None
         return AccessToken(
@@ -199,7 +248,10 @@ class AudienceBoundVerifier:
 
 
 def _find_key(jwks: dict[str, Any], kid: object) -> Any:
-    keys = jwt.PyJWKSet.from_dict(jwks).keys
+    try:
+        keys = jwt.PyJWKSet.from_dict(jwks).keys
+    except (jwt.PyJWKSetError, ValueError, TypeError) as exc:
+        raise JwksInvalidError(type(exc).__name__) from exc
     return next((k.key for k in keys if k.key_id == kid), None)
 
 
@@ -208,7 +260,12 @@ def _unverified_sub(token: str) -> str | None:
         sub = jwt.decode(token, options={"verify_signature": False}).get("sub")
     except jwt.PyJWTError:
         return None
-    return f"unverified:{sub}" if sub else None
+    return (
+        "unverified:sha256:"
+        + hashlib.sha256(sub.encode("utf-8", errors="surrogatepass")).hexdigest()[:16]
+        if isinstance(sub, str)
+        else None
+    )
 
 
 class ToolScopeGuard:
@@ -253,7 +310,7 @@ class ToolScopeGuard:
             required = self.tool_scopes.get(call)
             if required is None:
                 self.audit.write(
-                    spiffe_id=spiffe_id, tool=call, decision="deny", reason="unknown tool"
+                    spiffe_id=spiffe_id, tool=None, decision="deny", reason="unknown tool"
                 )
                 await _error(send, 400, "invalid_request", "unknown tool")
                 return

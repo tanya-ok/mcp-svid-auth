@@ -1,0 +1,8 @@
+{
+	"name": "security-lab",
+	"version": "0.1.0",
+	"description": "Read-only local security lab overview for Headlamp 0.45.0",
+	"devDependencies": {
+		"@kinvolk/headlamp-plugin": "0.14.0"
+	}
+}

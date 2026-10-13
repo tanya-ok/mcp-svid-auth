@@ -131,6 +131,9 @@ def generate() -> str:
     lines += _command(
         authz.build_parser(),
         [
+            ("Token form byte limit", str(authz.MAX_TOKEN_REQUEST_BYTES)),
+            ("Signing key prepublication", f"{authz.SIGNING_PREPUBLISH_SECONDS}s"),
+            ("Retired signing keys", f"at most {authz.MAX_RETIRED_SIGNING_KEYS}"),
             ("Access token TTL", f"{authz.DEFAULT_TOKEN_TTL}s"),
             ("Access token algorithm", f"`{authz.ACCESS_TOKEN_ALG}`"),
             ("SVID clock leeway", f"{authz._CLOCK_SKEW}s"),
@@ -143,6 +146,13 @@ def generate() -> str:
             ("Tools (scope)", tools),
             ("JWKS cache", f"{mcp_server.JWKS_CACHE_SECONDS}s"),
             ("Unknown `kid` refetch", f"at most every {mcp_server.JWKS_MIN_REFETCH_SECONDS}s"),
+            (
+                "Token verification budget",
+                f"{mcp_server.DEFAULT_TOKEN_VERIFICATIONS_PER_SECOND}/second/process",
+            ),
+            ("Access token byte limit", str(mcp_server.MAX_ACCESS_TOKEN_BYTES)),
+            ("JWKS decoded byte limit", str(mcp_server.MAX_JWKS_BYTES)),
+            ("JWKS key count limit", str(mcp_server.MAX_JWKS_KEYS)),
             ("Request body limit", f"{mcp_server.MAX_BODY_BYTES} bytes"),
             ("Accepted token `typ`", f"`{mcp_server._ACCESS_TOKEN_TYP}`"),
             (

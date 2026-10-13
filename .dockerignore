@@ -5,3 +5,7 @@
 .pytest_cache
 deploy/.data
 tests
+examples/
+scripts/
+docs/
+site/

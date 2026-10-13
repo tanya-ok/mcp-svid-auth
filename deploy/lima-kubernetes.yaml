@@ -1,0 +1,87 @@
+# Kubernetes owns the only containerd daemon. Buildah only builds OCI images.
+minimumLimaVersion: 2.2.1
+vmType: vz
+cpus: 2
+memory: 4GiB
+disk: 12GiB
+images:
+  - location: https://cloud.debian.org/images/cloud/trixie/20261001-2618/debian-13-genericcloud-arm64-20261001-2618.qcow2
+    arch: aarch64
+    digest: sha512:d8470b8c6c38fead046c794b5800a5a7b96672d5bcf543cc230ceb0c4b8ace05ed341a0c8928045422243fde26b2f1f2f58e99244c65709ffda2e3d4b674dd5a
+  - location: https://cloud.debian.org/images/cloud/trixie/20261001-2618/debian-13-genericcloud-amd64-20261001-2618.qcow2
+    arch: x86_64
+    digest: sha512:f46f0671a6e5bdec5291ab8972bae2f10e5408c2f64a74078f11efc2f06a436a9d0313ed50e0472542eeabf780e9f7c792ac0a314c6c20507fcd9fd81b468c3d
+mounts: []
+containerd:
+  system: false
+  user: false
+ssh:
+  forwardAgent: false
+  loadDotSSHPubKeys: false
+portForwards:
+  - guestPortRange: [1, 65535]
+    guestIP: 0.0.0.0
+    guestIPMustBeZero: false
+    proto: any
+    ignore: true
+provision:
+  - mode: system
+    script: |
+      #!/bin/sh
+      set -eu
+      if ! command -v buildah >/dev/null 2>&1 || ! dpkg-query -W netavark >/dev/null 2>&1; then
+        apt-get update
+        DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends buildah skopeo netavark aardvark-dns nftables curl ca-certificates iptables
+        apt-get clean
+        rm -rf /var/lib/apt/lists/*
+      fi
+      version='v1.37.1+k3s1'
+      if ! /usr/local/bin/k3s --version 2>/dev/null | head -1 | grep -Fq "$version"; then
+        case "$(uname -m)" in
+          aarch64) asset=k3s-arm64; digest=a1561ca4aef8b99f5588a840d4468ac39c8c1cd92470bbcb9634823fa221741a ;;
+          x86_64) asset=k3s; digest=92b94582eb7b34a8cf532e6006842b9ed215a6783cf56a3dd6271fd35243b2c0 ;;
+          *) exit 1 ;;
+        esac
+        staging=$(mktemp -d)
+        trap 'rm -rf "$staging"' EXIT
+        base="https://github.com/k3s-io/k3s/releases/download/$version"
+        curl --fail --location --retry 3 "$base/$asset" -o "$staging/$asset"
+        (cd "$staging"; printf '%s  %s\n' "$digest" "$asset" | sha256sum --check --strict)
+        install -m 0755 "$staging/$asset" /usr/local/bin/k3s
+      fi
+      mkdir -p /etc/rancher/k3s
+      cat > /etc/rancher/k3s/config.yaml <<'CONFIG'
+      node-name: security-lab
+      write-kubeconfig-mode: '0600'
+      disable:
+        - traefik
+        - servicelb
+        - metrics-server
+        - local-storage
+      secrets-encryption: true
+      CONFIG
+      cat > /etc/systemd/system/k3s.service <<'UNIT'
+      [Unit]
+      Description=Dedicated local security lab Kubernetes and containerd
+      After=network-online.target
+      Wants=network-online.target
+      [Service]
+      Type=notify
+      ExecStart=/usr/local/bin/k3s server
+      Restart=on-failure
+      RestartSec=5
+      KillMode=process
+      Delegate=yes
+      LimitNOFILE=1048576
+      TasksMax=infinity
+      [Install]
+      WantedBy=multi-user.target
+      UNIT
+      systemctl daemon-reload
+      systemctl enable --now k3s
+probes:
+  - script: |
+      #!/bin/sh
+      set -eu
+      sudo k3s kubectl wait --for=condition=Ready node/security-lab --timeout=10s
+    hint: The dedicated Kubernetes node must be ready; no kubeconfig is copied to the host.

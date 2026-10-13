@@ -1,56 +1,54 @@
-# mcp-svid-auth
+<p class="project-kicker">Workload identity / OAuth</p>
 
-Proof of concept. An AI agent authenticates to MCP servers with its SPIFFE workload identity instead of a static API key.
+# Give agents access that expires.
 
-!!! warning "Proof of concept"
-    Not production software. Do not deploy it to protect real data. See [Security model](security.md).
+<p class="project-lead">An agent proves its identity, gets permission for one server and calls only the tools it is allowed to use. No static API key.</p>
 
-## Problem
+## How it works
 
-MCP client configs often hold long-lived static keys:
-
-```json
-{ "env": { "NOTES_API_KEY": "sk-live-..." } }
+```mermaid
+---
+config:
+  theme: base
+  themeVariables:
+    primaryTextColor: '#183452'
+    textColor: '#183452'
+    lineColor: '#7b8797'
+    edgeLabelBackground: '#e8effa'
+    fontFamily: 'Arial, sans-serif'
+    fontSize: '15px'
+  flowchart:
+    nodeSpacing: 24
+    rankSpacing: 28
+    padding: 12
+---
+flowchart TB
+    accTitle: Short-lived access for an AI agent
+    accDescr: SPIRE gives the agent an identity. The access service checks policy and issues a token for one server. The MCP server checks the token and tool permission.
+    I["SPIRE<br/>Short-lived identity"] --> A["AI agent"]
+    A -->|Identity| P["Access service<br/>Checks policy"]
+    P -->|Token| A
+    A -->|Tool call| M["MCP server<br/>Checks token + tool"]
+    M --> R["Allow or refuse"]
+    classDef source fill:#e8effa,stroke:#5276a2,color:#183452,stroke-width:1.5px
+    classDef core fill:#e0f3ec,stroke:#328267,color:#173f33,stroke-width:1.5px
+    classDef limit fill:#fff0dc,stroke:#b27b36,color:#63421d,stroke-width:1.5px
+    class I,A source
+    class P,M core
+    class R limit
 ```
 
-| Issue with static keys | Effect |
-|---|---|
-| Long-lived | A leaked key works until someone rotates it by hand |
-| Not bound to a workload | Any process that reads the file can use it |
-| Not bound to a server | One key often opens several servers |
-| No per-caller identity | Audit logs cannot say which agent acted |
+[Run the demo](quickstart.md){ .overview-link }
+[Technical architecture](architecture.md){ .overview-link }
+[Security limits](security.md){ .overview-link }
 
-## What this POC proves
+## Where ZITADEL fits
 
-| Claim | Where |
-|---|---|
-| An agent gets a short-lived access token using only its JWT-SVID | `authz.py`, draft-ietf-oauth-spiffe-client-auth |
-| Tokens are bound to one MCP server via the RFC 8707 `resource` parameter | `authz.py`, `policy.py` |
-| A token issued for server A is rejected by server B | `mcp_server.py`, `test_token_for_a_is_rejected_by_b` |
-| Scopes are enforced per tool, with a 403 `insufficient_scope` challenge. Tools without a declared scope are denied. | `ToolScopeGuard`, `build_mcp` |
-| Every decision is written as one JSON audit line with the SPIFFE ID | `audit.py` |
-| The MCP server never forwards the incoming token | `mcp_server.py` makes no outbound call with it |
-| A stdio MCP server can start with a refreshed short-lived token instead of a static key | `stdio_wrapper.py` |
+**People: ZITADEL → sign-in gate → read-only Headlamp.**
+**Agents: SPIRE → access service → MCP tools.**
 
-## Standards targeted
+[Human sign-in and passkey boundaries](passwordless-identity.md).
+Human-to-agent delegation is not implemented; real Google sign-in and physical passkey enrollment remain operator gates.
 
-- [MCP authorization spec, revision 2026-07-28](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization): Protected Resource Metadata (RFC 9728), resource indicators (RFC 8707), audience validation, no token passthrough.
-- [draft-ietf-oauth-spiffe-client-auth-02](https://datatracker.ietf.org/doc/draft-ietf-oauth-spiffe-client-auth/): assertion type `urn:ietf:params:oauth:client-assertion-type:jwt-spiffe`, advertised as `spiffe_jwt` in `token_endpoint_auth_methods_supported`.
-- RFC 9068 JWT profile for the access tokens (`typ` `at+jwt`).
-
-Full list: [References](references.md).
-
-## Where to go next
-
-| Page | Content |
-|---|---|
-| [Quickstart](quickstart.md) | Install, offline checks, the SPIRE demo |
-| [Architecture](architecture.md) | Components and the token flow |
-| [Demo scenarios](demo.md) | The ten scenarios and their results |
-| [Security model](security.md) | Threat model, checks, non-goals, known gaps |
-| [stdio wrapper](stdio-wrapper.md) | Short-lived tokens for local stdio MCP servers |
-| [Configuration](configuration.md) | CLI flags and the policy file |
-
-## License
-
-Apache-2.0. Copyright 2026 Tanya Babitskaya. See [LICENSE](https://github.com/tanya-ok/mcp-svid-auth/blob/main/LICENSE) and [NOTICE](https://github.com/tanya-ok/mcp-svid-auth/blob/main/NOTICE).
+!!! note "Scope"
+    Prototype. Identity proves the workload, not the human intent.

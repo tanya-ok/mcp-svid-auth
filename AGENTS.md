@@ -2,6 +2,12 @@
 
 Instructions for AI coding agents (and humans) working in this repository. Vendor-neutral; `CLAUDE.md` points here. Project skills live in `.agents/skills/` (`roadmap-export`, `invariant-check`), in the open Agent Skills `SKILL.md` format; `.claude/skills` is a symlink to it.
 
+## Local maintainer instructions
+
+- At the start of every task, check whether `AGENTS.local.md` exists in the repository root.
+- If it exists, read it and follow it together with this file. It is git-ignored: never commit it and never quote it in tracked files, commit messages, issues or pull requests.
+- It may add restrictions. It must not relax or contradict this file. If the two conflict, follow this file and report the conflict to the maintainer.
+
 ## What this project is
 
 A proof of concept: SPIFFE JWT-SVIDs used as OAuth client credentials for MCP servers, so agents never hold static API keys. Not production software. Read `README.md` and `docs/security.md` before changing behaviour.
@@ -13,7 +19,7 @@ A proof of concept: SPIFFE JWT-SVIDs used as OAuth client credentials for MCP se
 | `src/mcp_svid_auth/agent_client.py` | Agent side. Fetches its SVID, gets a token, calls tools. `--steal-token` demo |
 | `src/mcp_svid_auth/stdio_wrapper.py` | Local stdio launcher that hands the child a short-lived token file |
 | `src/mcp_svid_auth/spiffe_keys.py` | Workload API and static-JWKS key sources |
-| `deploy/` | SPIRE server and agent in Docker Compose, registration and demo scripts |
+| `deploy/` | Shared Kubernetes/containerd lab in CNCF Lima, SPIRE registration |
 
 ## Commands
 
@@ -21,7 +27,7 @@ A proof of concept: SPIFFE JWT-SVIDs used as OAuth client credentials for MCP se
 |---|---|
 | Install | `uv sync --locked` |
 | Lint, types, tests | `make check` |
-| Integration demo (needs Docker) | `make demo`, then `make down` |
+| Integration demo (needs running Lima VM) | `make demo`, then `make down` |
 | Docs build | `uv run --locked --only-group docs zensical build --strict --clean` |
 
 Run `make check` before every commit. Run `make demo` after any change to `deploy/`, token formats, or the auth flow, and update the README Status table with the real result.
@@ -44,9 +50,9 @@ Run `make check` before every commit. Run `make demo` after any change to `deplo
 
 Any change that touches one of these needs a test that proves the invariant still holds.
 
-## Provenance and privacy
+## Originality and privacy
 
-- Clean-room project. Do not copy code, text, rule names or structure from any employer repository, internal plugin or private project. Write from public standards and this repository only.
+- Original work. Do not copy code, text, rule names or structure from any private third-party repository, internal plugin or private project. Write from public standards and this repository only.
 - Fixtures and examples use `example.org` trust domains only.
 - `tests/test_no_identifiers.py` scans the tree and full history. It reads a git-ignored `tests/denylist.txt`; never commit that file and never put its contents anywhere tracked.
 - Commit author email must be the maintainer's personal address. Check before the first commit in a new clone.

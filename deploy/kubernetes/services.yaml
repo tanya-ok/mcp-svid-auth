@@ -1,0 +1,84 @@
+# Runtime-neutral command inventory for the Kubernetes lab.
+services:
+  spire-server:
+    image: ghcr.io/spiffe/spire-server:1.15.3@sha256:4082f30d3e0ddc4000a171392c4ea174345ee44d161ee917c70b97b2ecfba141
+    command:
+    - -config
+    - /opt/spire/conf/server/server.conf
+  spire-agent:
+    image: ghcr.io/spiffe/spire-agent:1.15.3@sha256:41b0dcd8b258a69db9e2768292a060766fb76fd866e4bc925849981ea1b825ff
+    command:
+    - -config
+    - /opt/spire/conf/agent/agent.conf
+    - -joinToken
+    - ${JOIN_TOKEN:-set-by-demo-sh}
+    user: '0'
+  authz:
+    image: mcp-svid-auth:local
+    user: '1010'
+    command:
+    - mcp-svid-authz
+    - --issuer=http://authz:8100
+    - --policy=/policy/policy.yaml
+    - --host=0.0.0.0
+    - --port=8100
+    - --svid-replay=allow-reuse-within-lifetime
+    - --signing-rotation-seconds=60
+  notes-a:
+    image: mcp-svid-auth:local
+    user: '1011'
+    command:
+    - mcp-svid-notes
+    - --name=notes-a
+    - --resource=http://notes-a:8101/mcp
+    - --issuer=http://authz:8100
+    - --host=0.0.0.0
+    - --port=8101
+    - --upstream-resource=http://notes-b:8102/mcp
+    - --trusted-issuer=http://authz:8100
+    - --allow-http
+    - --allow-private-network
+  authz-strict:
+    image: mcp-svid-auth:local
+    user: '1010'
+    command:
+    - mcp-svid-authz
+    - --issuer=http://authz-strict:8104
+    - --policy=/app/deploy/policy.yaml
+    - --host=0.0.0.0
+    - --port=8104
+  notes-b:
+    image: mcp-svid-auth:local
+    user: '1012'
+    command:
+    - mcp-svid-notes
+    - --name=notes-b
+    - --resource=http://notes-b:8102/mcp
+    - --issuer=http://authz:8100
+    - --host=0.0.0.0
+    - --port=8102
+  notes-rogue:
+    image: mcp-svid-auth:local
+    user: '1013'
+    command:
+    - mcp-svid-notes
+    - --name=notes-rogue
+    - --resource=http://notes-rogue:8103/mcp
+    - --issuer=http://rogue-as:8100
+    - --host=0.0.0.0
+    - --port=8103
+  agent-research:
+    image: mcp-svid-auth:local
+    user: '1001'
+    entrypoint:
+    - mcp-svid-agent
+  agent-intruder:
+    image: mcp-svid-auth:local
+    user: '1002'
+    entrypoint:
+    - mcp-svid-agent
+  agent-impostor:
+    image: mcp-svid-auth:local
+    user: '1003'
+    entrypoint:
+    - mcp-svid-agent

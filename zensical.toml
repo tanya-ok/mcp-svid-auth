@@ -9,17 +9,43 @@ repo_name = "tanya-ok/mcp-svid-auth"
 edit_uri = "edit/main/docs/"
 docs_dir = "docs"
 site_dir = "site"
+extra_css = ["assets/overview.css"]
 
 nav = [
   { "Home" = "index.md" },
-  { "Quickstart" = "quickstart.md" },
+  { "Start locally" = "quickstart.md" },
   { "Architecture" = "architecture.md" },
-  { "Demo scenarios" = "demo.md" },
+  { "Demo" = "demo.md" },
+  { "Security and reference" = [
   { "Security model" = "security.md" },
-  { "Threat model (STPA-Sec)" = "threat-model.md" },
-  { "stdio wrapper" = "stdio-wrapper.md" },
+  { "Threat model" = "threat-model.md" },
+  { "Compatibility" = "compatibility.md" },
   { "Configuration" = "configuration.md" },
-  { "References" = "references.md" },
+  { "Audit integrity" = "audit.md" },
+  { "stdio wrapper" = "stdio-wrapper.md" },
+  { "Public standards" = "references.md" },
+] },
+  { "Lab guides" = [
+  { "CNCF runtime" = "runtime.md" },
+  { "Kubernetes lab" = "kubernetes-lab.md" },
+  { "Headlamp" = "headlamp-ui.md" },
+  { "ZITADEL / Human identity" = "passwordless-identity.md" },
+] },
+  { "Development and evidence" = [
+  { "Publication validation" = "publication.md" },
+  { "Portfolio readiness" = "portfolio-publication-readiness.md" },
+  { "Development plan" = "development-plan.md" },
+  { "Portfolio plan" = "portfolio-development-plan.md" },
+  { "Review quorum" = "quorum.md" },
+  { "Engineering OS integration" = "engineering-os-integration.md" },
+  { "Quorum implementation evidence" = "quorum-implementation-2026-10-07.md" },
+  { "Six-project review" = "portfolio-quorum-2026-10-07.md" },
+  { "Dated evidence" = [
+    { "Cost budgets and rotation" = "auth-cost-rotation.md" },
+    { "Portfolio checkpoint 2026-10-07" = "portfolio-checkpoint-2026-10-07.md" },
+    { "Quorum validation" = "quorum-validation.md" },
+  ] },
+] },
 ]
 
 [project.theme]
@@ -30,7 +56,6 @@ features = [
   "navigation.footer",
   "navigation.indexes",
   "navigation.path",
-  "navigation.sections",
   "navigation.top",
   "navigation.tracking",
   "search.highlight",
@@ -57,6 +82,7 @@ icon = "fontawesome/brands/github"
 link = "https://github.com/tanya-ok/mcp-svid-auth"
 
 [project.markdown_extensions]
+pymdownx.tasklist.custom_checkbox = true
 admonition = {}
 attr_list = {}
 md_in_html = {}

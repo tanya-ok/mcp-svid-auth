@@ -23,11 +23,19 @@ JWT-SVID to access token bridge (POC)
 | `--audit-log` | none | Audit log file (JSON lines, appended), default stderr |
 | `--max-svid-lifetime` | `300` | Reject JWT-SVIDs whose exp - iat exceeds this many seconds |
 | `--svid-replay` | `reject` | Reject: require a JWT-SVID jti and accept each (sub, jti) once; allow-reuse-within-lifetime: jti optional, a reused SVID is accepted until it expires |
+| `--replay-cache-size` | `10000` | Global live assertion cache limit; refuses when full |
+| `--replay-subject-limit` | `1000` | Maximum live assertion entries per verified subject |
+| `--token-requests-per-second` | `50` | Per-process token endpoint requests per fixed one-second window |
+| `--subject-requests-per-second` | `10` | Exchanges per authorized subject per fixed one-second window |
+| `--signing-rotation-seconds` | `3600` | Planned signing rotation interval; zero disables, minimum 60 seconds |
 
 Fixed values:
 
 | Setting | Value |
 |---|---|
+| Token form byte limit | 16384 |
+| Signing key prepublication | 60s |
+| Retired signing keys | at most 6 |
 | Access token TTL | 300s |
 | Access token algorithm | `ES256` |
 | SVID clock leeway | 30s |
@@ -60,6 +68,10 @@ Fixed values:
 | Tools (scope) | `notes.search` (`notes:read`), `notes.write` (`notes:write`) |
 | JWKS cache | 60s |
 | Unknown `kid` refetch | at most every 10s |
+| Token verification budget | 256/second/process |
+| Access token byte limit | 8192 |
+| JWKS decoded byte limit | 65536 |
+| JWKS key count limit | 16 |
 | Request body limit | 1048576 bytes |
 | Accepted token `typ` | `at+jwt` |
 | Accepted token algorithms | `ES256` |
@@ -110,6 +122,8 @@ Verify the hash chain of audit log files written with --audit-log
 | Flag | Default | Meaning |
 |---|---|---|
 | `files` | required | Audit log files, one chain each |
+| `--checkpoint` | none | Verify one complete log against a separately trusted terminal checkpoint |
+| `--write-checkpoint` | none | Create a new terminal checkpoint for one valid log; refuses to overwrite |
 
 Fixed values:
 

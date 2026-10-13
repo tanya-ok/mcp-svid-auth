@@ -18,9 +18,11 @@ import signal
 import threading
 import time
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+from urllib.parse import parse_qsl
 
 import jwt
 from cryptography.hazmat.primitives.asymmetric import ec
@@ -31,6 +33,7 @@ from starlette.responses import JSONResponse, Response
 from starlette.routing import Route
 
 from mcp_svid_auth.audit import AuditLog
+from mcp_svid_auth.budgets import WindowBudget
 from mcp_svid_auth.errors import AuthError
 from mcp_svid_auth.policy import Policy
 from mcp_svid_auth.spiffe_keys import (
@@ -47,6 +50,13 @@ DEFAULT_TOKEN_TTL = 300
 DEFAULT_MAX_SVID_LIFETIME = 300
 _CLOCK_SKEW = 30
 DEFAULT_REPLAY_CACHE_SIZE = 10_000
+DEFAULT_REPLAY_SUBJECT_LIMIT = 1000
+DEFAULT_TOKEN_REQUESTS_PER_SECOND = 50
+DEFAULT_SUBJECT_REQUESTS_PER_SECOND = 10
+DEFAULT_SIGNING_ROTATION_SECONDS = 3600
+SIGNING_PREPUBLISH_SECONDS = 60
+MAX_RETIRED_SIGNING_KEYS = 6
+MAX_TOKEN_REQUEST_BYTES = 16_384
 # reject: jti required, each (sub, jti) accepted once. allow-reuse-within-lifetime: jti optional and
 # not tracked, for SVID sources that cache and re-serve one SVID (SPIRE 1.15.3 agent, see docs).
 SVID_REPLAY_MODES = ("reject", "allow-reuse-within-lifetime")
@@ -67,9 +77,15 @@ class ReplayCache:
     """
 
     max_entries: int = DEFAULT_REPLAY_CACHE_SIZE
+    per_subject_limit: int = DEFAULT_REPLAY_SUBJECT_LIMIT
+    _subjects: dict[str, int] = field(default_factory=dict)
     _expiry: dict[tuple[str, str], float] = field(default_factory=dict)
     _heap: list[tuple[float, tuple[str, str]]] = field(default_factory=list)
     _lock: threading.Lock = field(default_factory=threading.Lock)
+
+    def __post_init__(self) -> None:
+        if self.max_entries < 1 or self.per_subject_limit < 1:
+            raise ValueError("replay cache limits must be positive")
 
     def __len__(self) -> int:
         return len(self._expiry)
@@ -82,6 +98,10 @@ class ReplayCache:
         while self._heap and self._heap[0][0] <= now:
             _, key = heapq.heappop(self._heap)
             self._expiry.pop(key, None)
+            sub = key[0]
+            self._subjects[sub] -= 1
+            if self._subjects[sub] == 0:
+                del self._subjects[sub]
 
     def add(self, sub: str, jti: str, expires_at: float, now: float) -> None:
         """Record a first use. Raises AuthError on replay or when the cache is full."""
@@ -89,7 +109,12 @@ class ReplayCache:
         with self._lock:
             self._evict(now)
             if key in self._expiry:
-                raise AuthError("invalid_client", "client assertion replayed", 401, f"jti={jti}")
+                raise AuthError(
+                    "invalid_client",
+                    "client assertion replayed",
+                    401,
+                    "jti_sha256=" + hashlib.sha256(jti.encode()).hexdigest()[:16],
+                )
             if len(self._expiry) >= self.max_entries:
                 raise AuthError(
                     "temporarily_unavailable",
@@ -97,6 +122,9 @@ class ReplayCache:
                     503,
                     f"{len(self._expiry)} live entries",
                 )
+            if self._subjects.get(sub, 0) >= self.per_subject_limit:
+                raise AuthError("temporarily_unavailable", "subject replay cache full", 503)
+            self._subjects[sub] = self._subjects.get(sub, 0) + 1
             self._expiry[key] = expires_at
             heapq.heappush(self._heap, (expires_at, key))
 
@@ -115,11 +143,30 @@ class AuthzServer:
     kid: str = field(default_factory=lambda: uuid.uuid4().hex[:16])
     replay_cache: ReplayCache = field(default_factory=ReplayCache)
     svid_replay: str = DEFAULT_SVID_REPLAY
+    request_budget: WindowBudget = field(
+        default_factory=lambda: WindowBudget(DEFAULT_TOKEN_REQUESTS_PER_SECOND, max_keys=1)
+    )
+    subject_budget: WindowBudget = field(
+        default_factory=lambda: WindowBudget(DEFAULT_SUBJECT_REQUESTS_PER_SECOND)
+    )
+    signing_rotation_seconds: int = DEFAULT_SIGNING_ROTATION_SECONDS
+    clock: Callable[[], float] = time.monotonic
+    _next_rotation: float = field(init=False)
+    _active_token_expiry: float = 0.0
+    _pending_key: tuple[ec.EllipticCurvePrivateKey, str, float] | None = None
+    _retired_keys: list[tuple[dict[str, Any], float]] = field(default_factory=list)
+    _signing_lock: threading.RLock = field(default_factory=threading.RLock)
     policy_path: Path | None = None
     _policy_digest: str | None = None
     _reload_lock: threading.Lock = field(default_factory=threading.Lock)
 
     def __post_init__(self) -> None:
+        if (
+            self.signing_rotation_seconds
+            and self.signing_rotation_seconds < SIGNING_PREPUBLISH_SECONDS
+        ):
+            raise ValueError("signing rotation interval must be zero or at least 60 seconds")
+        self._next_rotation = self.clock() + self.signing_rotation_seconds
         if self.svid_replay not in SVID_REPLAY_MODES:
             raise ValueError(f"svid_replay must be one of {SVID_REPLAY_MODES}")
         if self.policy_path is not None:
@@ -167,10 +214,40 @@ class AuthzServer:
         while not stop.wait(interval):
             self.reload_policy()
 
+    def _advance_signing_keys(self) -> None:
+        now = self.clock()
+        self._retired_keys = [(jwk, expiry) for jwk, expiry in self._retired_keys if expiry > now]
+        if self._pending_key is not None and now >= self._pending_key[2]:
+            self._retired_keys.append(
+                (
+                    _public_jwk(self.signing_key, self.kid),
+                    max(now + self.token_ttl, self._active_token_expiry) + _CLOCK_SKEW,
+                )
+            )
+            self.signing_key, self.kid, _ = self._pending_key
+            self._pending_key = None
+            self._active_token_expiry = 0.0
+            self._next_rotation = now + self.signing_rotation_seconds
+        if (
+            self.signing_rotation_seconds
+            and self._pending_key is None
+            and len(self._retired_keys) < MAX_RETIRED_SIGNING_KEYS
+            and now >= self._next_rotation
+        ):
+            self._pending_key = (
+                ec.generate_private_key(ec.SECP256R1()),
+                uuid.uuid4().hex[:16],
+                now + SIGNING_PREPUBLISH_SECONDS,
+            )
+
     def jwks(self) -> dict[str, Any]:
-        jwk: dict[str, Any] = json.loads(ECAlgorithm.to_jwk(self.signing_key.public_key()))
-        jwk.update({"kid": self.kid, "use": "sig", "alg": ACCESS_TOKEN_ALG})
-        return {"keys": [jwk]}
+        with self._signing_lock:
+            self._advance_signing_keys()
+            keys = [_public_jwk(self.signing_key, self.kid)]
+            keys.extend(jwk for jwk, _ in self._retired_keys)
+            if self._pending_key is not None:
+                keys.append(_public_jwk(self._pending_key[0], self._pending_key[1]))
+            return {"keys": keys}
 
     def metadata(self) -> dict[str, Any]:
         return {
@@ -182,7 +259,12 @@ class AuthzServer:
         }
 
     def verify_svid(self, assertion: str, policy: Policy | None = None) -> str:
-        """Validate a JWT-SVID client assertion and return its SPIFFE ID."""
+        """Validate and consume a JWT-SVID for direct callers."""
+        claims = self._verify_svid_claims(assertion, policy)
+        self._check_jti(claims["sub"], claims, record=True)
+        return str(claims["sub"])
+
+    def _verify_svid_claims(self, assertion: str, policy: Policy | None = None) -> dict[str, Any]:
         policy = policy or self.policy
         try:
             header = jwt.get_unverified_header(assertion)
@@ -195,6 +277,7 @@ class AuthzServer:
         sub = unverified.get("sub")
         if not isinstance(sub, str):
             raise AuthError("invalid_client", "assertion has no sub", 401)
+        _require_utf8(sub, "assertion sub invalid")
         try:
             trust_domain = spiffe_trust_domain(sub)
             if trust_domain != policy.trust_domain:
@@ -204,7 +287,7 @@ class AuthzServer:
             raise AuthError(exc.code, exc.description, 401, exc.detail) from exc
         except Exception as exc:
             raise AuthError(
-                "temporarily_unavailable", "trust bundle unavailable", 503, repr(exc)
+                "temporarily_unavailable", "trust bundle unavailable", 503, type(exc).__name__
             ) from exc
         required = ["sub", "aud", "exp", "iat"]
         if self.svid_replay == "reject":
@@ -224,7 +307,7 @@ class AuthzServer:
             raise AuthError("invalid_client", "client assertion audience mismatch", 401) from exc
         except jwt.PyJWTError as exc:
             raise AuthError(
-                "invalid_client", "client assertion invalid", 401, f"{type(exc).__name__}: {exc}"
+                "invalid_client", "client assertion invalid", 401, type(exc).__name__
             ) from exc
         aud = claims["aud"]
         if aud not in (self.issuer, [self.issuer]):
@@ -238,17 +321,18 @@ class AuthzServer:
                 401,
                 f"exp - iat = {lifetime}s, max {self.max_svid_lifetime}s",
             )
-        self._check_jti(sub, claims)
-        return sub
+        self._check_jti(sub, claims, record=False)
+        return claims
 
-    def _check_jti(self, sub: str, claims: dict[str, Any]) -> None:
+    def _check_jti(self, sub: str, claims: dict[str, Any], *, record: bool) -> None:
         """Validate jti when present. In reject mode (jti required) record it and refuse reuse."""
         if "jti" not in claims:
             return
         jti = claims["jti"]
         if not isinstance(jti, str) or not 0 < len(jti) <= _MAX_JTI_LENGTH:
             raise AuthError("invalid_client", "client assertion jti invalid", 401)
-        if self.svid_replay == "reject":
+        _require_utf8(jti, "client assertion jti invalid")
+        if record and self.svid_replay == "reject":
             # RFC 7523 section 3: remember each jti for as long as the assertion would be accepted.
             self.replay_cache.add(sub, jti, int(claims["exp"]) + _CLOCK_SKEW, time.time())
 
@@ -264,11 +348,15 @@ class AuthzServer:
         if not resource:
             raise AuthError("invalid_target", "resource parameter is required")
         policy = self.policy  # one snapshot per request, even if a reload swaps it
-        spiffe_id = self.verify_svid(assertion, policy)
+        verified = self._verify_svid_claims(assertion, policy)
+        spiffe_id = str(verified["sub"])
         client_id = form.get("client_id")
         if client_id is not None and client_id != spiffe_id:
             raise AuthError("invalid_client", "client_id does not match SVID", 401)
         scopes = policy.grant(spiffe_id, resource, parse_scope(form.get("scope")))
+        if not self.subject_budget.take(spiffe_id):
+            raise AuthError("temporarily_unavailable", "subject request budget exceeded", 429)
+        self._check_jti(spiffe_id, verified, record=True)
         now = int(time.time())
         claims = {
             "iss": self.issuer,
@@ -280,12 +368,17 @@ class AuthzServer:
             "exp": now + self.token_ttl,
             "jti": uuid.uuid4().hex,
         }
-        token = jwt.encode(
-            claims,
-            self.signing_key,
-            algorithm=ACCESS_TOKEN_ALG,
-            headers={"kid": self.kid, "typ": "at+jwt"},
-        )
+        with self._signing_lock:
+            self._advance_signing_keys()
+            self._active_token_expiry = max(
+                self._active_token_expiry, self.clock() + self.token_ttl
+            )
+            token = jwt.encode(
+                claims,
+                self.signing_key,
+                algorithm=ACCESS_TOKEN_ALG,
+                headers={"kid": self.kid, "typ": "at+jwt"},
+            )
         return {
             "access_token": token,
             "token_type": "Bearer",
@@ -294,9 +387,27 @@ class AuthzServer:
         }
 
     async def token_endpoint(self, request: Request) -> Response:
-        items = (await request.form()).multi_items()
-        form = {k: str(v) for k, v in items}
+        form: dict[str, str] = {}
         try:
+            if not self.request_budget.take():
+                raise AuthError("temporarily_unavailable", "request budget exceeded", 429)
+            if (
+                request.headers.get("content-type", "").split(";", 1)[0].strip()
+                != "application/x-www-form-urlencoded"
+            ):
+                raise AuthError("invalid_request", "form content type required")
+            encoded = bytearray()
+            async for chunk in request.stream():
+                if len(encoded) + len(chunk) > MAX_TOKEN_REQUEST_BYTES:
+                    raise AuthError("invalid_request", "token request too large", 413)
+                encoded.extend(chunk)
+            try:
+                items = parse_qsl(
+                    encoded.decode("utf-8"), keep_blank_values=True, max_num_fields=16
+                )
+            except (UnicodeError, ValueError):
+                raise AuthError("invalid_request", "invalid token form") from None
+            form = dict(items)
             if len(form) != len(items):
                 # RFC 6749 section 3.2: request parameters MUST NOT be included more than once.
                 raise AuthError("invalid_request", "repeated request parameter")
@@ -307,7 +418,7 @@ class AuthzServer:
             return JSONResponse(
                 {"error": exc.code, "error_description": exc.description},
                 status_code=exc.status,
-                headers=_NO_STORE,
+                headers={**_NO_STORE, **({"Retry-After": "1"} if exc.status == 429 else {})},
             )
         self._audit(form, "allow", f"issued for {form.get('resource')} scope={body['scope']}")
         return JSONResponse(body, headers=_NO_STORE)
@@ -317,11 +428,22 @@ class AuthzServer:
         try:
             sub = jwt.decode(form.get("client_assertion", ""), options={"verify_signature": False})
             spiffe_id = (
-                str(sub.get("sub")) if decision == "allow" else f"unverified:{sub.get('sub')}"
+                str(sub.get("sub"))
+                if decision == "allow"
+                else "unverified:sha256:"
+                + hashlib.sha256(
+                    str(sub.get("sub")).encode("utf-8", errors="surrogatepass")
+                ).hexdigest()[:16]
             )
             if decision == "allow":
                 # Lets reuse of one SVID be spotted in the audit trail when reuse is allowed.
-                reason = f"{reason} svid_jti={sub.get('jti', 'none')}"
+                jti = sub.get("jti")
+                label = (
+                    hashlib.sha256(jti.encode()).hexdigest()[:16]
+                    if isinstance(jti, str)
+                    else "none"
+                )
+                reason = f"{reason} svid_jti_sha256={label}"
         except jwt.PyJWTError:
             pass
         self.audit.write(spiffe_id=spiffe_id, tool=None, decision=decision, reason=reason)
@@ -340,6 +462,33 @@ class AuthzServer:
                 Route("/.well-known/oauth-authorization-server", metadata, methods=["GET"]),
             ]
         )
+
+
+def _public_jwk(key: ec.EllipticCurvePrivateKey, kid: str) -> dict[str, Any]:
+    jwk: dict[str, Any] = json.loads(ECAlgorithm.to_jwk(key.public_key()))
+    jwk.update({"kid": kid, "use": "sig", "alg": ACCESS_TOKEN_ALG})
+    return jwk
+
+
+def _positive(value: str) -> int:
+    number = int(value)
+    if number < 1:
+        raise argparse.ArgumentTypeError("must be positive")
+    return number
+
+
+def _rotation_interval(value: str) -> int:
+    number = int(value)
+    if number != 0 and number < SIGNING_PREPUBLISH_SECONDS:
+        raise argparse.ArgumentTypeError("must be zero or at least 60")
+    return number
+
+
+def _require_utf8(value: str, description: str) -> None:
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError as exc:
+        raise AuthError("invalid_client", description, 401) from exc
 
 
 def _digest(path: Path) -> str:
@@ -462,6 +611,36 @@ def build_parser() -> argparse.ArgumentParser:
             "allow-reuse-within-lifetime: jti optional, a reused SVID is accepted until it expires"
         ),
     )
+    parser.add_argument(
+        "--replay-cache-size",
+        type=_positive,
+        default=DEFAULT_REPLAY_CACHE_SIZE,
+        help="global live assertion cache limit; refuses when full",
+    )
+    parser.add_argument(
+        "--replay-subject-limit",
+        type=_positive,
+        default=DEFAULT_REPLAY_SUBJECT_LIMIT,
+        help="maximum live assertion entries per verified subject",
+    )
+    parser.add_argument(
+        "--token-requests-per-second",
+        type=_positive,
+        default=DEFAULT_TOKEN_REQUESTS_PER_SECOND,
+        help="per-process token endpoint requests per fixed one-second window",
+    )
+    parser.add_argument(
+        "--subject-requests-per-second",
+        type=_positive,
+        default=DEFAULT_SUBJECT_REQUESTS_PER_SECOND,
+        help="exchanges per authorized subject per fixed one-second window",
+    )
+    parser.add_argument(
+        "--signing-rotation-seconds",
+        type=_rotation_interval,
+        default=DEFAULT_SIGNING_ROTATION_SECONDS,
+        help="planned signing rotation interval; zero disables, minimum 60 seconds",
+    )
     return parser
 
 
@@ -483,6 +662,10 @@ def main(argv: list[str] | None = None) -> None:
         audit=AuditLog(path=args.audit_log, component="authz"),
         max_svid_lifetime=args.max_svid_lifetime,
         svid_replay=args.svid_replay,
+        replay_cache=ReplayCache(args.replay_cache_size, args.replay_subject_limit),
+        request_budget=WindowBudget(args.token_requests_per_second, max_keys=1),
+        subject_budget=WindowBudget(args.subject_requests_per_second),
+        signing_rotation_seconds=args.signing_rotation_seconds,
         policy_path=args.policy,
     )
     install_policy_reload(server, args.policy_poll_seconds)

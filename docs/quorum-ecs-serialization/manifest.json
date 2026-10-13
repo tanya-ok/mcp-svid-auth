@@ -1,0 +1,23 @@
+{
+  "mode": "live",
+  "packets": {
+    "ecs-contract": "4c1fed3c46194ea776fcdc4fff65c4dac0b30a35c568a4e3d937204ab18754af"
+  },
+  "schema_version": 1,
+  "required_peers": [
+    "kimi"
+  ],
+  "research_mode": "source_only",
+  "provider_versions": {
+    "claude": "2.1.270 (Claude Code)",
+    "codex": "codex-cli 0.160.0"
+  },
+  "implementation": {
+    "quorum_models.py": "35930455a9505607084442fe7ae6760a90bf249944acde020b659489c1c43c36",
+    "quorum_kimi.py": "40b10148d1855bbdd8c24fe5420d98aa569008722fb7d51680ed49a8ff82c206",
+    "quorum.py": "aff7b751e72664592acae94becb5f144a29094a9a92133628c81531c0f92cb52",
+    "quorum_core.py": "5264565bff45a055109d81fc723d4c8dd4f12eab05c61448e15e044c961e66f6",
+    "quorum_tasks.py": "94dd97eb8f1d1a3a7fccbe35c320f717f33696e6bc57d4de471a05d734903757",
+    "quorum_providers.py": "5fe2287a700e6783d5aca75160938bb1c8b13a791f4f2e5800159c1aa5c9b1d3"
+  }
+}

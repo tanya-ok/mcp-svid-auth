@@ -305,3 +305,39 @@ def test_agent_logs_url_refusal(
         ' "reason": "scheme not allowed"}'
     )
     assert source.audiences == []
+
+
+def test_refusal_output_drops_userinfo_and_query_credentials() -> None:
+    event = agent_client.refusal_event(
+        UnsafeUrlError(
+            "https://user:secret@mcp.example.org/mcp?token=secret#secret",
+            "no host or userinfo present",
+        )
+    )
+    assert event["url"] == "https://mcp.example.org/mcp"
+    assert "secret" not in json.dumps(event)
+
+
+async def test_remote_challenge_cannot_echo_a_credential() -> None:
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        return httpx2.Response(
+            403,
+            headers={
+                "WWW-Authenticate": 'Bearer error="insufficient_scope", scope="secret-token", '
+                'error_description="secret-token"'
+            },
+        )
+
+    def factory(**kwargs: Any) -> httpx2.AsyncClient:
+        return httpx2.AsyncClient(transport=httpx2.MockTransport(handler), **kwargs)
+
+    result = await call_tool(
+        "http://mcp.example.org/mcp",
+        "secret-token",
+        "notes.write",
+        {},
+        http=factory,
+        url_policy=UrlPolicy(allow_http=True, allow_private=True),
+    )
+    assert "HTTP 403" in result and 'error="insufficient_scope"' in result
+    assert "secret-token" not in result

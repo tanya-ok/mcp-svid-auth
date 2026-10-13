@@ -168,7 +168,7 @@ def test_authz_audit_lines(authz: AuthzServer, spire: LocalSvidIssuer, tmp_path:
     assert authz.audit.path is not None
     lines = authz.audit.path.read_text(encoding="utf-8").splitlines()
     assert '"decision":"allow"' in lines[0]
-    assert f'"spiffe_id":"unverified:{INTRUDER}"' in lines[1]
+    assert '"spiffe_id":"unverified:sha256:' in lines[1]
 
 
 def test_static_jwks_file_mode(tmp_path: Path, spire: LocalSvidIssuer) -> None:

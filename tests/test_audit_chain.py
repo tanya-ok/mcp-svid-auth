@@ -66,6 +66,18 @@ def test_corrupt_tail_fails_every_write(tmp_path: Path, tail: str) -> None:
     assert path.read_text(encoding="utf-8") == tail
 
 
+def test_valid_chain_without_trailing_newline_fails_every_write(tmp_path: Path) -> None:
+    path = tmp_path / "a.jsonl"
+    _write(AuditLog(path=path), 2)
+    unterminated = path.read_text(encoding="utf-8").rstrip("\n")
+    path.write_text(unterminated, encoding="utf-8")
+    log = AuditLog(path=path)
+    for _ in range(2):
+        with pytest.raises(AuditChainError):
+            _write(log, 1)
+    assert path.read_text(encoding="utf-8") == unterminated
+
+
 def _tampered(tmp_path: Path, change: Any) -> list[str]:
     path = tmp_path / "a.jsonl"
     _write(AuditLog(path=path), 4)
@@ -100,11 +112,12 @@ def test_truncated_head_is_detected(tmp_path: Path) -> None:
 
 
 def test_timestamp_going_backwards_is_reported() -> None:
-    first: dict[str, Any] = {"record_id": "1", "parent_record_id": None, "prev_hash": None}
+    first = AuditLog().write(spiffe_id=None, tool=None, decision="allow", reason="test")
     first["timestamp"] = "2026-09-27T10:00:01.000+00:00"
     second = {
+        **first,
         "record_id": "2",
-        "parent_record_id": "1",
+        "parent_record_id": first["record_id"],
         "prev_hash": record_hash(first),
         "timestamp": "2026-09-27T10:00:00.000+00:00",
     }
@@ -135,3 +148,79 @@ def test_server_audit_trail_verifies(tmp_path: Path) -> None:
     log.write(spiffe_id=None, tool=None, decision="deny", reason="missing_token")
     log.write(spiffe_id="unverified:x", tool=None, decision="deny", reason='quote " and \\')
     assert verify_lines(_lines(path)) == (2, [])
+
+
+@pytest.mark.parametrize("attack", ["tail", "last_edit", "rewrite", "empty"])
+def test_trusted_checkpoint_detects_terminal_tampering(tmp_path: Path, attack: str) -> None:
+    path = tmp_path / "a.jsonl"
+    _write(AuditLog(path=path), 4)
+    lines = _lines(path)
+    checkpoint = audit.create_checkpoint(lines)
+    assert verify_lines(lines, checkpoint) == (4, [])
+    if attack == "tail":
+        lines.pop()
+    elif attack == "last_edit":
+        lines[-1] = lines[-1].replace('"allow"', '"deny"')
+    elif attack == "empty":
+        lines.clear()
+    else:
+        records = [json.loads(line) for line in lines]
+        records[0]["reason"] = "rewritten"
+        for previous, current in itertools.pairwise(records):
+            current["prev_hash"] = record_hash(previous)
+        lines = [json.dumps(record) for record in records]
+    # Internal links alone cannot establish completeness or detect a replaced chain.
+    assert verify_lines(lines)[1] == []
+    assert verify_lines(lines, checkpoint)[1] == [
+        "terminal state does not match trusted checkpoint"
+    ]
+
+
+@pytest.mark.parametrize("record", [{}, {"record_id": 7}, [], {"timestamp": "secret"}])
+def test_malformed_records_are_fixed_errors(record: Any) -> None:
+    assert verify_lines([json.dumps(record)]) == (0, ["line 1: invalid record schema"])
+
+
+def test_resume_checks_whole_chain_and_never_bypasses_failure(tmp_path: Path) -> None:
+    path = tmp_path / "a.jsonl"
+    _write(AuditLog(path=path), 3)
+    path.write_text(path.read_text().replace("allow", "deny", 1))
+    log = AuditLog(path=path)
+    for _ in range(2):
+        with pytest.raises(AuditChainError, match="existing audit chain is invalid"):
+            _write(log, 1)
+    assert len(_lines(path)) == 3
+
+
+def test_checkpoint_command_cannot_replace_trusted_baseline(tmp_path: Path) -> None:
+    path, checkpoint = tmp_path / "a.jsonl", tmp_path / "trusted.json"
+    _write(AuditLog(path=path), 2)
+    with pytest.raises(SystemExit) as created:
+        audit.main([str(path), "--write-checkpoint", str(checkpoint)])
+    assert created.value.code == 0
+    baseline = checkpoint.read_bytes()
+    with pytest.raises(SystemExit) as verified:
+        audit.main([str(path), "--checkpoint", str(checkpoint)])
+    assert verified.value.code == 0
+    with pytest.raises(SystemExit) as refused:
+        audit.main([str(path), "--write-checkpoint", str(checkpoint)])
+    assert refused.value.code == 1
+    assert checkpoint.read_bytes() == baseline
+    path.write_text(_lines(path)[0] + "\n")
+    with pytest.raises(SystemExit) as truncated:
+        audit.main([str(path), "--checkpoint", str(checkpoint)])
+    assert truncated.value.code == 1
+
+
+@pytest.mark.parametrize("raw", ["{}", "[]", '{"version":true}', "private error text"])
+def test_invalid_checkpoint_is_rejected(raw: str) -> None:
+    with pytest.raises(ValueError):
+        audit.Checkpoint.from_json(raw)
+
+
+def test_invalid_unicode_is_a_schema_error(tmp_path: Path) -> None:
+    path = tmp_path / "a.jsonl"
+    _write(AuditLog(path=path), 1)
+    record = json.loads(_lines(path)[0])
+    record["reason"] = chr(0xD800)
+    assert verify_lines([json.dumps(record)]) == (0, ["line 1: invalid record schema"])

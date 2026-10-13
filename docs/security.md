@@ -9,12 +9,12 @@ The table below is the short view. [Threat model (STPA-Sec)](threat-model.md) de
 
 | Threat | Mitigation here | Gap |
 |---|---|---|
-| Static key leak | No static keys. SVID and access token both live 5 min. | A stolen access token works until expiry. |
+| Static key leak | No static keys. Access tokens live 5 min; SVID maximum is 5 min, with 60s SVIDs in the demo. | A stolen access token works until expiry. |
 | Token replay to another server | `aud` bound to one resource. Each server checks `aud` equals its own URI. | None within one issuer. |
-| JWT-SVID replay to authz | SVID `aud` must be the issuer only. 5 min TTL. Default `--svid-replay reject`: `jti` required, each `(sub, jti)` accepted once. | The compose demo runs `allow-reuse-within-lifetime` because the SPIRE 1.15.3 agent re-serves cached SVIDs; there a stolen SVID mints tokens until it expires. In `reject` mode the seen-set is in memory and per process, and a stolen, unused SVID still works once. |
+| JWT-SVID replay to authz | SVID `aud` must be the issuer only. Maximum SVID lifetime 5 min; demo TTL 60s. Default `--svid-replay reject`: `jti` required, each `(sub, jti)` accepted once. | The container demo runs `allow-reuse-within-lifetime` because the SPIRE 1.15.3 agent re-serves cached SVIDs; there a stolen SVID mints tokens until it expires. In `reject` mode the seen-set is in memory and per process, and a stolen, unused SVID still works once. |
 | SVID harvesting by a malicious resource | The agent mints SVIDs only for issuers on its `--trusted-issuer` allowlist. An issuer named in Protected Resource Metadata that is not on the list is refused, and logged as `issuer_refused`, before any request to it and before any SVID fetch. Exact match after scheme, host and default port normalization; no prefix match. | The allowlist is per process, not per resource. |
-| Discovery SSRF | Every URL the agent fetches or sends a credential to (resource, issuer, `token_endpoint`, tool call) must be `https` and resolve only to public addresses. Refused URLs are logged as `url_refused` and get no request. | `--allow-http` and `--allow-private-network` turn the checks off for dev and log `url_policy_relaxed` on stderr at startup; the compose demo needs both. The check resolves the host itself and the HTTP client resolves it again, so DNS rebinding between the two lookups is not covered. |
-| Workload impersonation | SPIRE docker attestor. Identity is bound to a container label, not a UID. | Anyone who can start a container with a registered label on that host gets that identity. |
+| Discovery SSRF | Every URL the agent fetches or sends a credential to (resource, issuer, `token_endpoint`, tool call) must be `https` and resolve only to public addresses. The default transport connects to a checked address with the original TLS identity and ignores proxy environment variables. Refused URLs get no request. | `--allow-http` and `--allow-private-network` relax these checks for dev and log `url_policy_relaxed` on stderr at startup; the container demo needs both. Injected HTTP factories must enforce equivalent address checks. |
+| Workload impersonation | SPIRE Kubernetes namespace/ServiceAccount selectors; copied labels are denied. | Cluster operators and those allowed to use an authorized ServiceAccount can assume its identity. |
 | Over-broad access | Allowlist per SPIFFE ID, resource and scope. Per-tool scope check. Policy reloaded on SIGHUP or file change. | Policy is a local file. No versioning or review flow. Issued tokens outlive a revoked grant by up to 300s. |
 | Confused deputy | Server never forwards the incoming token. An upstream call uses the server's own SVID-based token (`notes.search_upstream`), tested in `test_no_passthrough.py`. | No delegation chain: the upstream sees the relay, not the original caller. |
 | Algorithm confusion | SVIDs: asymmetric algorithms only, `alg=none` rejected. Access tokens: ES256 only, `typ` `at+jwt`. Key selected by `kid` from a trusted key set. | None known. |
@@ -37,7 +37,7 @@ The table below is the short view. [Threat model (STPA-Sec)](threat-model.md) de
 | `sub`, `aud`, `exp`, `iat` present, and `jti` in `reject` mode; `exp` not past (30s leeway) | 401 `invalid_client` | The SVID is current and, in `reject` mode, individually identifiable |
 | `aud` is the issuer and nothing else | 401 `invalid_client` | The SVID was minted for this authorization server only |
 | `exp - iat` at most `--max-svid-lifetime` (300s) | 401 `invalid_client` | Long-lived SVIDs cannot be used as credentials |
-| `jti`, if present, a string of 1 to 256 characters | 401 `invalid_client` | No oversized or non-string identifiers reach the cache or the audit log |
+| `jti`, if present, a UTF-8 string of 1 to 256 characters | 401 `invalid_client` | No oversized, non-string or unencodable identifiers reach the cache or the audit log |
 | `reject` mode: `(sub, jti)` not seen before | 401 `invalid_client` | Each SVID is used once (RFC 7523 section 3) |
 | `reject` mode: replay cache has room | 503 `temporarily_unavailable` | Memory is bounded and a full cache fails closed |
 | `client_id`, if sent, equals `sub` | 401 `invalid_client` | No identity mismatch between parameters |
@@ -46,7 +46,7 @@ The table below is the short view. [Threat model (STPA-Sec)](threat-model.md) de
 | `scope` present, well formed, subset of grant | 400 `invalid_scope` | Least privilege, no implicit default scope |
 | Trust bundle fetch fails | 503 `temporarily_unavailable` | Fails closed without leaking details |
 
-Error descriptions returned to the client are fixed strings. Exception details go only to the audit log.
+Error descriptions returned to the client are fixed strings. Audit diagnostics use exception class names, never exception text; unverified subjects and SVID IDs are hashed.
 
 ### JWT-SVID replay tracking
 
@@ -59,19 +59,19 @@ Error descriptions returned to the client are fixed strings. Exception details g
 
 In `reject` mode:
 
-- The token endpoint records each accepted `(sub, jti)` pair after the signature, audience and lifetime checks pass. Invalid assertions are not recorded.
+- The token endpoint records each accepted `(sub, jti)` pair after signature, audience, lifetime, client ID, policy and subject budget checks pass. Invalid or unauthorized requests are not recorded.
 - An entry lives until the assertion `exp` plus the 30s clock leeway, the same window in which the SVID would still validate. Expired entries are evicted on every insert.
-- A second request with the same pair gets 401 `invalid_client` (`client assertion replayed`, RFC 7523 section 3.2). The audit line names the `jti`.
-- The cache holds at most 10,000 live entries. When full, new assertions get 503 `temporarily_unavailable` instead of evicting live entries.
+- A second request with the same pair gets 401 `invalid_client` (`client assertion replayed`, RFC 7523 section 3.2). The audit line identifies a digest prefix of the `jti`.
+- The cache defaults to 10,000 live entries globally and 1,000 per verified subject. Both limits are configurable. Exhaustion gets 503 `temporarily_unavailable`; live entries are never evicted to admit another assertion. Quotas reduce one caller's impact but do not guarantee availability against several authorized callers.
 - The seen-set is in memory and per process. Several authz replicas, or a restart, each start with their own empty set.
 
 SPIRE 1.15.3, tested 2026-09-27:
 
 - JWT-SVIDs carry no `jti` by default. With `-jwtSVIDIncludeJTI` on the registration entry, the server adds a random `jti` to each SVID it mints (`pkg/server/credtemplate/builder.go`).
 - The entry flag is documented to also bypass the agent JWT-SVID cache. In 1.15.3 it does not: the agent drops the attribute when it syncs entries (`additionalAttributesFromProto` in `pkg/agent/client/util.go` copies only `DisableX509SvidPrefetch`). Three fetches in a row from one workload returned the same token and the same `jti`.
-- So under `reject`, the first token request from a workload succeeds and every later one within the cached SVID lifetime gets `client assertion replayed`. The demo therefore sets `--svid-replay=allow-reuse-within-lifetime` in `deploy/docker-compose.yml` and keeps `-jwtSVIDIncludeJTI` in `deploy/register.sh`.
+- So under `reject`, the first token request from a workload succeeds and every later one within the cached SVID lifetime gets `client assertion replayed`. The demo therefore sets `--svid-replay=allow-reuse-within-lifetime` in `deploy/kubernetes/services.yaml` and keeps `-jwtSVIDIncludeJTI` in `scripts/kubernetes_demo.py`.
 
-Residual risk in `allow-reuse-within-lifetime`: a JWT-SVID stolen from the agent, the workload or the wire mints access tokens at authz until it expires, up to `--max-svid-lifetime` (300s). Each allow audit line carries `svid_jti=<jti>`, so reuse of one SVID is visible in the audit trail, but it is not blocked. Switch back to `reject` once the SVID source yields a fresh `jti` per fetch.
+Residual risk in `allow-reuse-within-lifetime`: a JWT-SVID stolen from the agent, the workload or the wire mints access tokens at authz until it expires, up to `--max-svid-lifetime` (300s). Each allow audit line carries `svid_jti_sha256=<digest prefix>`, so reuse of one SVID is visible in the audit trail, but it is not blocked. Switch back to `reject` once the SVID source yields a fresh `jti` per fetch.
 
 ### Policy reload and grant revocation
 
@@ -100,6 +100,7 @@ Time to denial after a grant is removed:
 | Unknown `kid` triggers one JWKS refetch, at most every 10s | 401 `invalid_token` | A rotated authz key is picked up; random `kid` values cannot cause a fetch storm |
 | JWKS fetched only from `--jwks-uri`, never from `jku` or `x5u` | not applicable | A token cannot choose its own verification key |
 | JWKS fetch fails | 401 `invalid_token`, audit `jwks_unavailable` | Fails closed |
+| JWKS has no usable key or a malformed key | 401 `invalid_token`, audit `jwks_invalid` | Fails closed, no 500 and no exception text |
 | `alg` ES256, signature valid | 401 `invalid_token` | No algorithm confusion |
 | `iss` equals configured issuer | 401 `invalid_token` | No tokens from another issuer |
 | `aud` equals own resource URI | 401 `invalid_token` | A token for another server is useless here |
@@ -116,7 +117,7 @@ Time to denial after a grant is removed:
 
 ## Non-goals
 
-- Not production software. No HA, no rotation of the authz signing key, no rate limits, plain HTTP inside the compose network.
+- Not production software. No HA or distributed rate limits; planned in-process key rotation and local cost budgets only. Plain HTTP inside the demo network.
 - Not a replacement for an MCP gateway such as agentgateway. It shows the token flow a gateway could implement.
 - No user delegation. The agent acts as itself (`client_credentials`). No token exchange or `act` claim chain yet.
 - No X.509-SVID or WIT-SVID client authentication. JWT-SVID only.
@@ -125,35 +126,34 @@ Time to denial after a grant is removed:
 
 | Gap | Effect | Where |
 |---|---|---|
-| Docker socket in the SPIRE agent | Full Docker API access for the agent container. See [Docker socket exposure](#docker-socket-exposure). | `deploy/docker-compose.yml` |
-| Label selectors | Anyone who can start a container with a registered label on the host gets that identity. Fits a single-host demo only. | `deploy/register.sh` |
 | No access token `jti` tracking | A stolen access token is usable until it expires (5 min). | `mcp_server.py` |
-| JWT-SVID reuse allowed in the demo | `allow-reuse-within-lifetime`: a stolen SVID mints tokens until it expires (max 300s). Needed because the SPIRE 1.15.3 agent re-serves cached SVIDs. | `deploy/docker-compose.yml` |
+| JWT-SVID reuse allowed in the demo | `allow-reuse-within-lifetime`: a stolen SVID mints tokens until it expires (max 300s). Needed because the SPIRE 1.15.3 agent re-serves cached SVIDs. | `deploy/kubernetes/services.yaml` |
 | JWT-SVID seen-set per process | `reject` mode only. Replicas or a restart forget seen `jti` values. | `ReplayCache` |
-| Signing key in memory | Rotates only on restart. | `AuthzServer.signing_key` |
-| Audit chain not anchored | Edits, deletions inside the file and reordering are detected, but deleting lines from the end (tail truncation) is not, and a writer with file access can rebuild the chain after an edit. No signing or external anchor. | `audit.py` |
+| Signing keys in memory | Planned rotation preserves public-key overlap; an abrupt restart still loses old keys. | `AuthzServer.signing_key` |
+| Checkpoint storage trust | Links detect internal edits but not tail truncation. A separately trusted terminal checkpoint detects suffix deletion and chain replacement; an attacker who can replace both defeats that protection. No signatures or managed external storage. See [Audit integrity](audit.md). | `audit.py` |
 | Upstream widens read access | `notes.search_upstream` on notes-a lets any caller with `notes:read` on notes-a read notes-b under notes-a's own grant, even without a notes-b grant (confused deputy widening). Fix pending a delegation chain. | `mcp_server.Upstream` |
-| Plain HTTP | No TLS inside the compose network. The demo agents run with `--allow-http --allow-private-network`. | `deploy/docker-compose.yml`, `deploy/demo.sh` |
-| DNS rebinding | The URL check and the HTTP client resolve the host separately. A name that changes answer between the two lookups can still reach a private address. | `agent_client.UrlPolicy` |
+| Plain HTTP | No TLS inside the demo network. The demo agents run with `--allow-http --allow-private-network`. | `deploy/kubernetes/services.yaml`, `scripts/run_demo.py` |
+| Custom transports and dev URL flags | The default client binds the actual connection to a policy-checked IP with original TLS hostname verification. Injected HTTP factories must enforce equivalent checks; dev flags deliberately allow private addresses and HTTP. | `agent_client.UrlPolicy`, `pinned_transport.py` |
 
-## Docker socket exposure
+## Runtime socket exposure
 
-The SPIRE agent uses the `docker` workload attestor. For each Workload API call it maps the caller PID to a container ID through `/proc`, then inspects that container over the Docker API to read its labels. Registration entries select on `docker:label:org.example.svid.workload:<name>`.
+The default [Kubernetes lab](kubernetes-lab.md) does not mount a containerd or
+Podman API socket. SPIRE verifies projected ServiceAccount tokens and uses the
+Kubernetes workload attestor with namespace/ServiceAccount selectors. Application
+pods receive only the Workload API socket, not Kubernetes API tokens. The agent
+has root and host PID access inside the VM. Operators who may start workloads with
+an authorized ServiceAccount can assume its identity; copied labels alone are
+insufficient. The previous Podman label-attestation path was retired on
+2026-10-13. Its dated reports remain historical evidence, not active runtime
+instructions. See [Runtime](runtime.md).
 
-What this needs, and nothing more:
+## Compatibility boundary
 
-| Requirement | Why | Trade-off |
-|---|---|---|
-| `/var/run/docker.sock` mounted into `spire-agent` | Container inspect to read labels | The Docker API has no read-only mode. `:ro` on the mount only stops the socket file being replaced. A process that controls the agent container controls the Docker daemon, which is root on the host (or on the Docker Desktop VM). |
-| Workloads join the agent PID namespace (`pid: service:spire-agent`) | The agent must see the caller PID in `/proc` | Workloads can see each other's processes. |
-| Agent runs as root | Read the socket and `/proc` of workloads under other UIDs | Root inside the agent container. |
+The JWT-SVID exchange is a supported subset of draft -02. The local Workload API bundle lookup is a deliberate alternative the draft does not recommend for general interoperability. Generic MCP Client Credentials authentication and native gateway SPIFFE support do not imply support for this exchange. See [Compatibility](compatibility.md).
 
-Not needed: `cgroup: host`. With cgroup v2 on Docker Desktop, the default container locator resolves container IDs without it (tested 2026-09-27).
+## Cost and planned rotation
 
-Compared with the unix attestor used before: a process running under a registered UID no longer gets an identity. The identity now follows the container label. The cost is the Docker socket in the agent. Anyone who can already start containers on the host can still claim any label, so the host Docker daemon is the trust boundary.
-
-Options to narrow the exposure, not implemented here:
-
-- A socket proxy in front of the daemon that allows only `GET /containers/{id}/json`.
-- `docker:image_config_digest` selectors next to the label, so a label alone is not enough.
-- The Kubernetes (`k8s`) attestor on a real cluster, where the kubelet API replaces the Docker socket.
+[Cost budgets and signing-key overlap](auth-cost-rotation.md) specifies token form,
+verification and JWKS response limits; negative fetch caching; per-subject replay
+quotas; and public-key prepublication/retirement. These are per-process prototype
+bounds, not an external denial-of-service protection or restart-safe key store.
