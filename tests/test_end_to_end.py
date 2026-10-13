@@ -91,7 +91,7 @@ async def test_token_for_a_is_rejected_by_b(world_factory: Any) -> None:
     deny = [e for e in world.audit_lines() if e["decision"] == "deny"]
     assert deny
     assert "InvalidAudienceError" in deny[0]["reason"]
-    assert deny[0]["spiffe_id"] == f"unverified:{RESEARCH}"
+    assert deny[0]["spiffe_id"].startswith("unverified:sha256:")
 
 
 async def test_scope_enforced_per_tool(world_factory: Any) -> None:

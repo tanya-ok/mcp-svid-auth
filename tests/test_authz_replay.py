@@ -23,7 +23,7 @@ def test_replayed_svid_rejected(authz: AuthzServer, spire: LocalSvidIssuer) -> N
     status, body = _post(authz, _form(svid, resource=SERVER_B, scope="notes:read"))
     assert (status, body["error"]) == (401, "invalid_client")
     assert body["error_description"] == "client assertion replayed"
-    assert "client assertion replayed (jti=" in _audit_reasons(authz)[1]
+    assert "client assertion replayed (jti_sha256=" in _audit_reasons(authz)[1]
 
 
 def test_distinct_jti_accepted(authz: AuthzServer, spire: LocalSvidIssuer) -> None:
@@ -41,11 +41,11 @@ def test_missing_jti_rejected(authz: AuthzServer, spire: LocalSvidIssuer) -> Non
     status, body = _post(authz, _form(spire.mint(RESEARCH, ISSUER, jti=None)))
     assert (status, body["error"]) == (401, "invalid_client")
     assert body["error_description"] == "client assertion invalid"
-    assert '"jti"' in _audit_reasons(authz)[0]
+    assert "MissingRequiredClaimError" in _audit_reasons(authz)[0]
     assert len(authz.replay_cache) == 0
 
 
-@pytest.mark.parametrize("jti", ["", 7, "x" * 257])
+@pytest.mark.parametrize("jti", ["", 7, "x" * 257, "\ud800"])
 def test_malformed_jti_rejected(authz: AuthzServer, spire: LocalSvidIssuer, jti: object) -> None:
     status, body = _post(authz, _form(spire.mint(RESEARCH, ISSUER, jti=jti)))
     assert (status, body["error"]) == (401, "invalid_client")
@@ -126,12 +126,13 @@ def test_allow_reuse_accepts_same_svid_and_audits_jti(
     assert _post(lenient, _form(svid, resource=SERVER_B, scope="notes:read"))[0] == 200
     assert len(lenient.replay_cache) == 0
     reasons = _audit_reasons(lenient)
-    assert all(r.endswith("svid_jti=cached") for r in reasons)
+    assert reasons[0].split("svid_jti_sha256=")[1] == reasons[1].split("svid_jti_sha256=")[1]
+    assert all("cached" not in r for r in reasons)
 
 
 def test_allow_reuse_accepts_missing_jti(lenient: AuthzServer, spire: LocalSvidIssuer) -> None:
     assert _post(lenient, _form(spire.mint(RESEARCH, ISSUER, jti=None)))[0] == 200
-    assert _audit_reasons(lenient)[0].endswith("svid_jti=none")
+    assert _audit_reasons(lenient)[0].endswith("svid_jti_sha256=none")
 
 
 @pytest.mark.parametrize("jti", ["", 7, "x" * 257])
@@ -149,8 +150,7 @@ def test_allow_reuse_keeps_other_svid_checks(lenient: AuthzServer, spire: LocalS
 
 def test_demo_sets_replay_mode_and_spire_jti_explicitly() -> None:
     deploy = Path(__file__).resolve().parent.parent / "deploy"
-    compose = (deploy / "docker-compose.yml").read_text(encoding="utf-8")
+    compose = (deploy / "kubernetes/services.yaml").read_text(encoding="utf-8")
     assert "--svid-replay=allow-reuse-within-lifetime" in compose
-    register = (deploy / "register.sh").read_text(encoding="utf-8")
-    assert register.count("entry create") == 1
+    register = (deploy.parent / "scripts/kubernetes_demo.py").read_text(encoding="utf-8")
     assert "-jwtSVIDIncludeJTI" in register

@@ -1,0 +1,59 @@
+{
+  "provider": "moonshot",
+  "model": "kimi-k2.6",
+  "time": "2026-10-07T12:22:11.938900+00:00",
+  "prompt_sha256": "e5430a7aec796b00edf2a4e4cfcafa184a09e3a8decba371a30b17cd4111bb9a",
+  "implementation_sha256": "40b10148d1855bbdd8c24fe5420d98aa569008722fb7d51680ed49a8ff82c206",
+  "max_tokens": 8192,
+  "usage": {
+    "prompt_tokens": 8114,
+    "completion_tokens": 742,
+    "total_tokens": 8856
+  },
+  "review": {
+    "summary": "Independent read of the four supplied files confirms F1's core structural claim: no tracker adapter seam exists in the snapshot. Source is a closed two-branch union of beads-native shapes; loadIssues spawns the bd binary inline; types.ts frames the domain model as a reduction of bd export; IssueStore holds exactly one Source and emits a single hardcoded status row (\"source-1\"/\"Configured tracker\"). These are read-only structural facts. However, F1 overstates two consequences: Dependency.type is plain string, so non-beads trackers need not fake beads vocabulary or widen types; and the last-hyphen split for projectOf assumes an identifier contract absent here, making cross-repository collision an unproven behavioral claim without omitted composition code. The type-level attribution gap is verifiable: Issue lacks source/repo fields, so merged issues from distinct adapters would be indistinguishable. Linear remains correctly documented as optional roadmap work. I split the difference: support the adapter-absence claim as directly observable, but mark needs_test for the unproven multi-repository collision and project-split correctness claims that require omitted application logic to demonstrate.",
+    "findings": [],
+    "votes": [
+      {
+        "finding_id": "F1",
+        "verdict": "needs_test",
+        "reason": "The adapter seam absence is structurally verifiable: Source is a closed union of beads-native shapes, loadIssues execs bd inline, types.ts documents the model as bd export reduction, and IssueStore carries one Source with hardcoded status literals. I support this leg. However, F1 bundles unproven behavioral claims: (1) that last-hyphen splitting is incorrect requires an id format contract not in the snapshot; (2) that identical prefixes across workspaces cause merging requires omitted grouping/composition code to demonstrate; (3) that Dependency.type forces beads vocabulary is overstated since it is plain string. The attribution gap (no source/repo on Issue) is type-level real but its consequences need the omitted application layer. Priority 3 design debt is appropriate. Verdict is needs_test because the improvement criteria require behavioral verification (items 3-5) that cannot be validated from this selection alone.",
+        "evidence": [
+          {
+            "path": "dashboard/src/beads.ts",
+            "line": 14,
+            "quote": "export type Source = { kind: \"bd\"; root: string } | { kind: \"jsonl\"; path: string };"
+          },
+          {
+            "path": "dashboard/src/beads.ts",
+            "line": 108,
+            "quote": "const { stdout } = await execFileAsync(\"bd\", [\"export\", \"--no-memories\"], {"
+          },
+          {
+            "path": "dashboard/src/types.ts",
+            "line": 2,
+            "quote": "// `bd export` emits (beads JSONL), reduced to the fields the dashboard uses."
+          },
+          {
+            "path": "dashboard/src/store.ts",
+            "line": 38,
+            "quote": "id: \"source-1\","
+          },
+          {
+            "path": "dashboard/src/types.ts",
+            "line": 10,
+            "quote": "type: string;"
+          }
+        ]
+      }
+    ],
+    "limitations": [
+      "No web searches, fetches, commands, builds, tests, or type checks were performed; all claims from reading four supplied files only.",
+      "HTTP layer, /api/health route, source-status.js, app composition, CLI entry point, grouping/filtering logic, and dashboard configuration are absent from snapshot.",
+      "Vaults, private configuration, untracked work, and all other modules outside declared selection were not reviewed.",
+      "Packet omitted list is empty but does not establish complete repository coverage; breadth of outside code unknown.",
+      "Snapshot marked dirty at revision d7eceec; reviewed text may not match any committed tree.",
+      "Prior reviews treated as untrusted evidence; agreement between them was not treated as proof."
+    ]
+  }
+}

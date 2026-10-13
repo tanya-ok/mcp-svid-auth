@@ -1,0 +1,41 @@
+{
+  "mode": "live",
+  "packets": {
+    "mcp-svid-auth": "cecfa3c566224e272e01db7a4bfe64f2ed158a1e01bab3301fd38da574cfb473",
+    "hipaa-fhir-mcp": "5f52dafd4309850431b32cac154784fcc3b3d913813ab65b8739f9977bcbdece",
+    "mcp-spiffe-bridge": "1920ab0fb744364e7c171611978781929eae64fb6c69f1b3dcbd69960eea74c6",
+    "ecs-contract": "abc44dcf434b64192d864ad4fd22e7349a1f65102f4e370612deb47c02c43b85",
+    "ciso-assistance": "80362cfd7398471794239d8c157e4a29771d20d27a997222453c8eeeb712dfb1",
+    "engineering-os": "bb911021bc22d176cd2592addc679f7ce4ecb63ee15053e7b70c27213db147bf"
+  },
+  "schema_version": 1,
+  "required_peers": [
+    "kimi"
+  ],
+  "research_mode": "source_only",
+  "provider_versions": {
+    "claude": "2.1.231 (Claude Code)",
+    "codex": "codex-cli 0.160.0"
+  },
+  "implementation": {
+    "quorum_models.py": "35930455a9505607084442fe7ae6760a90bf249944acde020b659489c1c43c36",
+    "quorum_kimi.py": "40b10148d1855bbdd8c24fe5420d98aa569008722fb7d51680ed49a8ff82c206",
+    "quorum.py": "aff7b751e72664592acae94becb5f144a29094a9a92133628c81531c0f92cb52",
+    "quorum_core.py": "5264565bff45a055109d81fc723d4c8dd4f12eab05c61448e15e044c961e66f6",
+    "quorum_tasks.py": "06ed7b7fad015b6209a827220af0b5fdaecec585fdfa9e274173061237a58835",
+    "quorum_providers.py": "5fe2287a700e6783d5aca75160938bb1c8b13a791f4f2e5800159c1aa5c9b1d3"
+  },
+  "execution": {
+    "concurrency": 2,
+    "isolated_project_runs": {
+      "mcp-svid-auth": "20261007T123322520415Z-mcp-svid-auth",
+      "hipaa-fhir-mcp": "20261007T123322520415Z-hipaa-fhir-mcp",
+      "mcp-spiffe-bridge": "20261007T123322520415Z-mcp-spiffe-bridge",
+      "ecs-contract": "20261007T123322520415Z-ecs-contract",
+      "ciso-assistance": "20261007T123322520415Z-ciso-assistance"
+    },
+    "reused": {
+      "engineering-os": "20261007T120015388704Z"
+    }
+  }
+}

@@ -1,6 +1,6 @@
 __pycache__/
 *.py[cod]
-.venv/
+.venv
 dist/
 build/
 *.egg-info/
@@ -12,3 +12,5 @@ tests/denylist.txt
 var/
 deploy/.data/
 site/
+node_modules/
+AGENTS.local.md

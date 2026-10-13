@@ -87,13 +87,13 @@ async def test_token_from_other_issuer_rejected(world_factory: Any) -> None:
 async def test_access_token_without_at_jwt_typ_rejected(world_factory: Any) -> None:
     async with world_factory() as world:
         reason = await _denied_reason(world, _mint(world, headers={"typ": "JWT"}))
-    assert "typ must be at+jwt" in reason
+    assert reason == "invalid_token: InvalidTokenError"
 
 
 async def test_access_token_without_iat_rejected(world_factory: Any) -> None:
     async with world_factory() as world:
         reason = await _denied_reason(world, _mint(world, iat=None))
-    assert "iat" in reason
+    assert reason == "invalid_token: MissingRequiredClaimError"
 
 
 async def test_access_token_algorithm_pinned_to_es256(world_factory: Any) -> None:
@@ -128,7 +128,7 @@ async def test_unknown_tool_denied(world_factory: Any) -> None:
     assert response.json()["error_description"] == "unknown tool"
     line = world.audit_lines()[0]
     assert (line["tool"], line["decision"], line["reason"]) == (
-        "notes.delete",
+        None,
         "deny",
         "unknown tool",
     )
@@ -185,3 +185,29 @@ async def test_tools_list_without_token_context_is_empty() -> None:
     mcp, _ = build_mcp("t", NotesStore())
     result = await mcp._handle_list_tools(cast(Any, None), None)
     assert result.tools == []
+
+
+async def test_token_with_additional_audience_is_rejected(world_factory: Any) -> None:
+    async with world_factory() as world:
+        reason = await _denied_reason(
+            world, _mint(world, aud=[SERVER_A, "https://other.example.org/mcp"])
+        )
+    assert reason == "invalid_token: InvalidAudienceError"
+
+
+async def test_unverified_subject_and_unknown_tool_cannot_echo_a_token(world_factory: Any) -> None:
+    async with world_factory() as world:
+        secret = "never-log-this-credential"
+        await _denied_reason(world, _mint(world, sub=secret, aud="https://other.example.org/mcp"))
+        body = {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": secret}}
+        assert (await _raw_post(world, json.dumps(body).encode(), _mint(world))).status_code == 400
+        assert secret not in repr(world.audit_lines())
+
+
+async def test_invalid_unicode_unverified_subject_denied_and_audited(world_factory: Any) -> None:
+    async with world_factory() as world:
+        reason = await _denied_reason(
+            world, _mint(world, sub="\ud800", aud="https://other.example.org/mcp")
+        )
+        assert reason == "invalid_token: InvalidAudienceError"
+        assert world.audit_lines()[0]["spiffe_id"].startswith("unverified:sha256:")

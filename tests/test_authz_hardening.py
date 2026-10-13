@@ -31,6 +31,17 @@ def test_svid_without_iat_rejected(authz: AuthzServer, spire: LocalSvidIssuer) -
     assert (status, body["error"]) == (401, "invalid_client")
 
 
+def test_invalid_unicode_subject_denied_and_audited(
+    authz: AuthzServer, spire: LocalSvidIssuer
+) -> None:
+    svid = spire.mint(RESEARCH + "\ud800", ISSUER)
+    status, body = _post(authz, _form(svid))
+    assert (status, body["error"]) == (401, "invalid_client")
+    assert body["error_description"] == "assertion sub invalid"
+    assert _audit_reasons(authz) == ["invalid_client: assertion sub invalid"]
+    assert len(authz.replay_cache) == 0
+
+
 def test_svid_lifetime_above_max_rejected(authz: AuthzServer, spire: LocalSvidIssuer) -> None:
     svid = spire.mint(RESEARCH, ISSUER, ttl=3600)
     status, body = _post(authz, _form(svid))
@@ -76,6 +87,7 @@ def test_bundle_lookup_failure_is_503_without_detail(spire: LocalSvidIssuer) -> 
     status, body = _post(server, _form(spire.mint(RESEARCH, ISSUER)))
     assert (status, body["error"]) == (503, "temporarily_unavailable")
     assert "secret" not in body["error_description"]
+    assert "secret" not in repr(server.audit._last)
 
 
 def test_scope_is_required(authz: AuthzServer, spire: LocalSvidIssuer) -> None:

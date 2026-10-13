@@ -34,7 +34,7 @@ flowchart LR
 | `policy` | none | Allowlist of SPIFFE ID, resource and scopes. |
 | `audit` | `mcp-svid-audit-verify` | One hash-chained JSON line per decision, to a file or stderr, and the chain verifier. |
 | `spiffe_keys` | none | JWT-SVID source and key resolver: Workload API, or a static JWKS for tests. |
-| `deploy/` | `make demo` | SPIRE server and agent 1.15.3, registration entries, the services, ten scenarios. |
+| `deploy/` | `make demo` | SPIRE server and agent 1.15.3, registration entries, the services, eighteen asserted scenarios. |
 
 ## Upstream calls without token passthrough
 
@@ -65,7 +65,7 @@ sequenceDiagram
     AG->>AZ: GET /.well-known/oauth-authorization-server
     AZ-->>AG: issuer, token_endpoint
     AG->>SA: FetchJWTSVID(aud = issuer)
-    SA-->>AG: JWT-SVID (5 min)
+    SA-->>AG: JWT-SVID (60s demo, max 5 min)
     AG->>AZ: POST /token client_credentials<br/>client_assertion = JWT-SVID<br/>resource = notes-a
     AZ->>SA: FetchJWTBundles
     AZ->>AZ: verify SVID, check policy.yaml
@@ -79,7 +79,7 @@ sequenceDiagram
 
 Steps on the agent side (`agent_client.fetch_access_token`):
 
-0. Before each request, check the URL: `https` only, and every address the host resolves to must be public (not private, loopback, link-local, shared or multicast). A failing URL is refused with `url_refused` and nothing is sent to it. This applies to the resource, the chosen issuer, the `token_endpoint` from the issuer metadata, and the tool call. IPv6 addresses that embed an IPv4 address (IPv4-mapped, IPv4-compatible, NAT64 `64:ff9b::/96`) are judged by the embedded address, and site-local `fec0::/10` is refused. `--allow-http` and `--allow-private-network` relax the two checks for local and compose setups; either one emits a `url_policy_relaxed` event on stderr at startup.
+0. Before each request, check the URL and bind the default transport to a checked numeric address with original Host and TLS server-name verification: `https` only, and every address the host resolves to must be public (not private, loopback, link-local, shared or multicast). A failing URL is refused with `url_refused` and nothing is sent to it. This applies to the resource, the chosen issuer, the `token_endpoint` from the issuer metadata, and the tool call. IPv6 addresses that embed an IPv4 address (IPv4-mapped, IPv4-compatible, NAT64 `64:ff9b::/96`) are judged by the embedded address, and site-local `fec0::/10` is refused. `--allow-http` and `--allow-private-network` relax the two checks for local container setups; either one emits a `url_policy_relaxed` event on stderr at startup.
 1. Read Protected Resource Metadata. Fail if its `resource` differs from the requested one.
 2. Take the first entry of `authorization_servers` that is on the `--trusted-issuer` allowlist. Refuse with `issuer_refused` if there is none. Comparison is exact after lowercasing scheme and host, dropping the default port and mapping an empty path to `/` (RFC 8414 section 2, RFC 9728 section 3). No prefix match; `/t` and `/t/` differ.
 3. Read that authorization server's metadata. Fail if its `issuer` differs.
@@ -98,7 +98,7 @@ Steps on the agent side (`agent_client.fetch_access_token`):
 | `resource` | canonical URI of the MCP server (required) |
 | `scope` | required, single-space separated, must be a subset of the policy grant |
 
-Repeated parameters are rejected with `invalid_request`. Error descriptions are fixed strings. Exception details go to the audit log only. Responses carry `Cache-Control: no-store`.
+Repeated parameters are rejected with `invalid_request`. Error descriptions are fixed strings. Exception class names, not exception text, may appear in the audit log. Responses carry `Cache-Control: no-store`.
 
 ## Access token
 
@@ -113,7 +113,7 @@ JWT, header `typ` `at+jwt`, `alg` ES256, `kid` of the authz signing key.
 | `iat`, `exp` | issue time, issue time + 300s |
 | `jti` | random hex |
 
-The authz signing key is a P-256 key generated in memory at start. It rotates only on restart.
+The authz signing keys are P-256 keys generated in memory. Planned in-process rotation publishes the next public key before use and retains previous verification keys until their tokens expire. Keys do not survive a restart. See [rotation and request budgets](auth-cost-rotation.md).
 
 ## Audit log
 
@@ -132,18 +132,62 @@ Every allow and deny decision in authz and the MCP servers is one JSON line:
 | `spiffe_id` | caller, prefixed with `unverified:` when the decision was made before the signature check, `null` when unknown |
 | `tool` | tool name for `tools/call`, else `null` |
 | `decision` | `allow`, `deny`, or `policy_reload` (authz only) |
-| `reason` | OAuth error code and fixed description, plus audit-only detail |
+| `reason` | Fixed description or exception class name; hashed SVID ID for correlation |
 
 Without `--audit-log` the lines go to stderr.
 
 ### Hash chain
 
-Each file is one chain, built as in [draft-sharif-agent-audit-trail-05](https://datatracker.ietf.org/doc/draft-sharif-agent-audit-trail/) (checked 2026-09-27): `prev_hash(N) = hex(SHA-256(JCS(record N-1)))`, and `parent_record_id` links to the previous `record_id`. The field set is this project's own, not the full AAT record. A process that opens an existing file continues its chain from the last line, and refuses every write while that line does not parse or lacks its trailing newline. One writer per file.
+Each file is one chain, built as in [draft-sharif-agent-audit-trail-05](https://datatracker.ietf.org/doc/draft-sharif-agent-audit-trail/) (checked 2026-09-27): `prev_hash(N) = hex(SHA-256(JCS(record N-1)))`, and `parent_record_id` links to the previous `record_id`. The field set is this project's own, not the full AAT record. A process that opens an existing file validates the whole chain before continuing it, and refuses every write while the chain is invalid or its last line lacks a trailing newline. One writer per file.
 
 ```sh
 mcp-svid-audit-verify authz.jsonl notes-a.jsonl
 ```
 
-The verifier recomputes every link and reports edited, deleted, reordered or inserted lines and timestamps that go backwards. Exit code 0 means every chain is intact. Deleting lines from the end of a file (tail truncation) is not detected, because the chain has no external anchor for its last record.
+The verifier recomputes every link and reports edited, deleted, reordered or inserted lines and timestamps that go backwards. Exit code 0 means every chain is intact. Without `--checkpoint`, deleting lines from the end of a file (tail truncation) is not detected, because the links have no anchor for the last record.
 
-The chain is tamper-evident, not tamper-proof: anyone who can write the file can rewrite the whole chain from the edited line on. Anchoring the last hash elsewhere, or signing records, is not implemented, so truncation from the end goes unnoticed.
+The chain is tamper-evident, not tamper-proof: anyone who can write the file can rewrite the whole chain from the edited line on. A terminal checkpoint is implemented; storing it independently is the operator's responsibility. Signatures and managed external storage are not implemented. See [Audit integrity](audit.md).
+
+## Human sign-in with ZITADEL
+
+ZITADEL is the optional human identity provider for the read-only Headlamp panel.
+SPIRE identifies workloads; ZITADEL signs in approved people. Human sign-in does
+not grant MCP tool permissions or delegate the user's authority to an agent.
+
+```mermaid
+flowchart TB
+    H["Approved person"] -->|"Passkey sign-in"| Z["ZITADEL"]
+    Z -->|"OIDC with PKCE"| G["Panel sign-in gate"]
+    G -->|"Short-lived local session"| U["Read-only Headlamp"]
+    U -->|"Gate's read-only credential"| K["Kubernetes state"]
+```
+
+[Open the sign-in guide](headlamp-ui.md#optional-human-sign-in).
+The synthetic WebAuthn/OIDC checks passed. Real Google sign-in and physical
+passkey enrollment remain operator gates. Human-to-agent delegation is not implemented.
+
+## Optional personal-os integration
+
+Proposed boundary, not an implemented integration. personal-os coordinates the
+task and selects an MCP tool. A workload identity lets its agent obtain a
+short-lived access token for that tool's MCP server. The server checks audience
+and scope independently of the planner.
+
+Keep this adapter optional: local files and Beads do not require an OAuth service.
+ZITADEL authenticates a person; it does not turn their session into an agent
+credential. Human-to-agent delegation needs a separate bounded contract before
+an agent can act on a person's authority.
+
+## Local runtime ownership
+
+The shared security lab runs in a dedicated CNCF Lima VM with k3s Kubernetes and
+containerd. The VM has 2 CPUs and 4 GiB memory, mounts only the three security
+repositories read-only, and is started explicitly. SPIRE uses projected-token
+node attestation and namespace/ServiceAccount workload selectors. The FHIR gateway
+loads mcp-spiffe-bridge and authenticates the peer over real mTLS before checking
+its resource-bound OAuth token. mcp-spiffe-bridge is not yet published, so the lab
+is not reproducible from public sources; the offline [quickstart](quickstart.md)
+path needs only this repository. See [shared lab](kubernetes-lab.md).
+
+The VM and cluster operator control this boundary. Workloads do not receive a
+container runtime API socket or Kubernetes API credentials. The legacy Podman compatibility path was retired on 2026-10-13.

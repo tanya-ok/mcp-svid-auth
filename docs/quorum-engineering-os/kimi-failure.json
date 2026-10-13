@@ -1,0 +1,12 @@
+{
+  "time": "2026-10-07T12:17:33.507311+00:00",
+  "code": "kimi_schema_invalid",
+  "categories": [
+    "json_invalid"
+  ],
+  "usage": {
+    "prompt_tokens": 8114,
+    "completion_tokens": 6057,
+    "total_tokens": 14171
+  }
+}

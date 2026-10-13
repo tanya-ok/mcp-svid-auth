@@ -1,0 +1,8 @@
+{"time": "2026-10-07T12:00:56.893231+00:00", "project": "engineering-os", "stage": "research", "outcome": "started", "provider": "claude"}
+{"time": "2026-10-07T12:02:28.778851+00:00", "project": "engineering-os", "stage": "research", "outcome": "completed", "provider": "claude"}
+{"time": "2026-10-07T12:02:29.101015+00:00", "project": "engineering-os", "stage": "verify", "outcome": "started", "provider": "codex"}
+{"time": "2026-10-07T12:03:13.229137+00:00", "project": "engineering-os", "stage": "verify", "outcome": "incomplete_review_votes", "provider": "codex"}
+{"time": "2026-10-07T12:03:53.887260+00:00", "project": "engineering-os", "stage": "verify", "outcome": "started", "provider": "codex"}
+{"time": "2026-10-07T12:04:28.980842+00:00", "project": "engineering-os", "stage": "verify", "outcome": "completed", "provider": "codex"}
+{"time": "2026-10-07T12:04:28.985521+00:00", "project": "engineering-os", "stage": "rebuttal", "outcome": "started", "provider": "claude"}
+{"time": "2026-10-07T12:06:18.793847+00:00", "project": "engineering-os", "stage": "rebuttal", "outcome": "completed", "provider": "claude"}

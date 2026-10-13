@@ -16,9 +16,13 @@ from cryptography.hazmat.primitives.asymmetric import ec
 from jwt.algorithms import ECAlgorithm
 
 from mcp_svid_auth.audit import AuditLog
+from mcp_svid_auth.budgets import WindowBudget
 from mcp_svid_auth.mcp_server import (
     JWKS_CACHE_SECONDS,
     JWKS_MIN_REFETCH_SECONDS,
+    MAX_ACCESS_TOKEN_BYTES,
+    MAX_JWKS_BYTES,
+    MAX_JWKS_KEYS,
     AudienceBoundVerifier,
     JwksFetcher,
 )
@@ -132,7 +136,7 @@ async def test_refetch_is_rate_limited(tmp_path: Path) -> None:
     clock.now += JWKS_MIN_REFETCH_SECONDS
     assert await verifier.verify_token(bogus[0]) is None
     assert len(server.urls) == 3
-    assert all("unknown signing key" in r for r in _reasons(tmp_path))
+    assert all(r == "invalid_token: InvalidTokenError" for r in _reasons(tmp_path))
 
 
 async def test_cache_expires_after_ttl(tmp_path: Path) -> None:
@@ -167,7 +171,7 @@ async def test_fetch_failure_denies_without_raising(tmp_path: Path) -> None:
     server.status = 503
     verifier, _ = _verifier(server, tmp_path)
     assert await verifier.verify_token(key.mint()) is None
-    assert _reasons(tmp_path) == ["jwks_unavailable: HTTPStatusError"]
+    assert _reasons(tmp_path) == ["jwks_unavailable"]
 
 
 async def test_fetch_does_not_block_the_event_loop(tmp_path: Path) -> None:
@@ -190,3 +194,87 @@ async def test_fetch_does_not_block_the_event_loop(tmp_path: Path) -> None:
         done.set()
         await task
     assert ticks >= 5
+
+
+async def test_cold_outage_has_one_fetch_per_retry_window(tmp_path: Path) -> None:
+    key = SigningKey()
+    server = FakeAuthz(key.jwks())
+    server.status = 503
+    clock = Clock()
+    verifier, _ = _verifier(server, tmp_path, clock)
+    results = await asyncio.gather(*(verifier.verify_token(key.mint()) for _ in range(40)))
+    assert results == [None] * 40
+    assert len(server.urls) == 1
+    clock.now += JWKS_MIN_REFETCH_SECONDS
+    assert await verifier.verify_token(key.mint()) is None
+    assert len(server.urls) == 2
+
+
+async def test_bounded_verification_refuses_before_fetch_and_audits_fixed_reason(
+    tmp_path: Path,
+) -> None:
+
+    key = SigningKey()
+    server = FakeAuthz(key.jwks())
+    clock = Clock()
+    verifier, _ = _verifier(server, tmp_path, clock)
+    verifier.budget = WindowBudget(2, clock=clock)
+    assert await verifier.verify_token("x" * (MAX_ACCESS_TOKEN_BYTES + 1)) is None
+    assert await verifier.verify_token("\ud800") is None
+    assert await verifier.verify_token(key.mint()) is None
+    assert server.urls == []
+    assert _reasons(tmp_path) == [
+        "invalid_token_size_or_encoding",
+        "invalid_token_size_or_encoding",
+        "verification_budget_exceeded",
+    ]
+    clock.now += 1
+    assert await verifier.verify_token(key.mint()) is not None
+
+
+@pytest.mark.parametrize("oversized", ["bytes", "keys"])
+async def test_jwks_response_has_decoded_size_and_key_count_bounds(
+    tmp_path: Path, oversized: str
+) -> None:
+
+    key = SigningKey()
+    server = FakeAuthz(
+        {"keys": [{}] * (MAX_JWKS_KEYS + 1)}
+        if oversized == "keys"
+        else {"keys": [], "padding": "x" * MAX_JWKS_BYTES}
+    )
+    verifier, _ = _verifier(server, tmp_path)
+    assert await verifier.verify_token(key.mint()) is None
+    assert _reasons(tmp_path) == ["jwks_unavailable"]
+
+
+def _malformed_jwks(key: SigningKey, kind: str) -> dict[str, Any]:
+    jwk = key.jwks()["keys"][0]
+    if kind == "bad_point":
+        return {"keys": [{**jwk, "y": jwk["x"]}]}
+    if kind == "bad_base64":
+        return {"keys": [{**jwk, "x": "!!!"}]}
+    return {"keys": ["not a jwk"]}
+
+
+@pytest.mark.parametrize("kind", ["bad_point", "bad_base64", "not_an_object"])
+async def test_malformed_jwks_key_denies_and_audits_fixed_reason(tmp_path: Path, kind: str) -> None:
+    key = SigningKey()
+    verifier, _ = _verifier(FakeAuthz(_malformed_jwks(key, kind)), tmp_path)
+    assert await verifier.verify_token(key.mint()) is None
+    assert _reasons(tmp_path) == ["jwks_invalid"]
+
+
+@pytest.mark.parametrize("error", [ValueError, TypeError])
+async def test_key_parsing_errors_fail_closed_without_exception_text(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, error: type[Exception]
+) -> None:
+    def explode(_: dict[str, Any]) -> jwt.PyJWKSet:
+        raise error("internal detail")
+
+    key = SigningKey()
+    verifier, _ = _verifier(FakeAuthz(key.jwks()), tmp_path)
+    monkeypatch.setattr(jwt.PyJWKSet, "from_dict", staticmethod(explode))
+    assert await verifier.verify_token(key.mint()) is None
+    assert _reasons(tmp_path) == ["jwks_invalid"]
+    assert "internal detail" not in (tmp_path / "mcp.jsonl").read_text()

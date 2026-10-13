@@ -21,7 +21,7 @@ Example, as an MCP host config entry:
 }
 ```
 
-`--allow-http` and `--allow-private-network` are needed only because this example uses compose service names over plain http. Without them the wrapper accepts only `https` URLs that resolve to public addresses, and refuses anything else with a `url_refused` event on stderr and exit code 2.
+`--allow-http` and `--allow-private-network` are needed only because this example uses lab cluster service names over plain http. Without them the wrapper accepts only `https` URLs that resolve to public addresses, and refuses anything else with a `url_refused` event on stderr and exit code 2.
 
 The child must read the token from `MCP_ACCESS_TOKEN_FILE` before each upstream call.
 

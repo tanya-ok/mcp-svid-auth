@@ -17,6 +17,7 @@ import argparse
 import asyncio
 import ipaddress
 import json
+import re
 import socket
 import sys
 from collections.abc import Awaitable, Callable, Collection
@@ -29,6 +30,7 @@ from mcp.client import Client
 from mcp.client.streamable_http import streamable_http_client
 
 from mcp_svid_auth.authz import CLIENT_ASSERTION_TYPE
+from mcp_svid_auth.pinned_transport import PinnedTransport
 from mcp_svid_auth.spiffe_keys import SvidSource, WorkloadApiSvidSource
 
 HttpFactory = Callable[..., httpx2.AsyncClient]
@@ -96,8 +98,8 @@ class UrlPolicy:
     Default: https only, and every address the host resolves to must be public, so a malicious
     Protected Resource Metadata or authorization server metadata document cannot point the
     client at internal services (SSRF). A host that does not resolve is refused. The check
-    resolves the name itself; the HTTP client resolves it again, so DNS rebinding between the
-    two lookups is not covered.
+    default transport connects to an address checked at dispatch, preserving Host and TLS
+    server-name verification. Injected HTTP factories must provide their own equivalent guard.
     """
 
     allow_http: bool = False
@@ -105,6 +107,11 @@ class UrlPolicy:
     resolve: Resolver = field(default=resolve_host, compare=False)
 
     async def check(self, url: str) -> None:
+        self._host(url)
+        if not self.allow_private:
+            await self.addresses(url)
+
+    def _host(self, url: str) -> str:
         parts = urlsplit(url)
         schemes = ("https", "http") if self.allow_http else ("https",)
         if parts.scheme.lower() not in schemes:
@@ -112,16 +119,27 @@ class UrlPolicy:
         host = parts.hostname
         if not host or "@" in parts.netloc:
             raise UnsafeUrlError(url, "no host or userinfo present")
-        if self.allow_private:
-            return
+        try:
+            _ = parts.port
+        except ValueError:
+            raise UnsafeUrlError(url, "invalid port") from None
+        return host
+
+    async def addresses(self, url: str) -> list[str]:
+        host = self._host(url)
         try:
             addresses = [host] if _is_ip_literal(host) else await self.resolve(host)
         except OSError:
             raise UnsafeUrlError(url, "host does not resolve") from None
         if not addresses:
             raise UnsafeUrlError(url, "host does not resolve")
-        if not all(is_public_address(a) for a in addresses):
+        try:
+            permitted = self.allow_private or all(is_public_address(a) for a in addresses)
+        except ValueError:
+            permitted = False
+        if not permitted:
             raise UnsafeUrlError(url, "host resolves to a non-public address")
+        return addresses
 
 
 def _is_ip_literal(host: str) -> bool:
@@ -167,8 +185,17 @@ def is_trusted_issuer(issuer: str, trusted: Collection[str]) -> bool:
     return candidate in {normalize_issuer(t) for t in trusted}
 
 
-def default_http(**kwargs: Any) -> httpx2.AsyncClient:
-    return httpx2.AsyncClient(timeout=httpx2.Timeout(30, read=300), **kwargs)
+def default_http(url_policy: UrlPolicy = STRICT_URLS, **kwargs: Any) -> httpx2.AsyncClient:
+    return httpx2.AsyncClient(
+        timeout=httpx2.Timeout(30, read=300),
+        trust_env=False,
+        transport=PinnedTransport(url_policy.addresses),
+        **kwargs,
+    )
+
+
+def _http_for_policy(http: HttpFactory, policy: UrlPolicy, **kwargs: Any) -> httpx2.AsyncClient:
+    return http(url_policy=policy, **kwargs) if http is default_http else http(**kwargs)
 
 
 def resource_metadata_url(resource: str) -> str:
@@ -198,7 +225,7 @@ async def discover(
     if not trusted_issuers:
         raise ValueError("at least one trusted issuer is required")
     await url_policy.check(resource)
-    async with http() as client:
+    async with _http_for_policy(http, url_policy) as client:
         prm = (await client.get(resource_metadata_url(resource))).raise_for_status().json()
         if prm.get("resource") != resource:
             raise TokenRequestError("protected resource metadata names a different resource")
@@ -208,7 +235,16 @@ async def discover(
             raise UntrustedIssuerError(resource, named)
         issuer = trusted[0]
         await url_policy.check(issuer)
-        meta_url = issuer.rstrip("/") + "/.well-known/oauth-authorization-server"
+        parts = urlsplit(issuer)
+        meta_url = urlunsplit(
+            (
+                parts.scheme,
+                parts.netloc,
+                "/.well-known/oauth-authorization-server" + parts.path.rstrip("/"),
+                "",
+                "",
+            )
+        )
         meta = (await client.get(meta_url)).raise_for_status().json()
     if meta.get("issuer") != issuer:
         raise TokenRequestError("authorization server metadata issuer mismatch")
@@ -239,13 +275,24 @@ async def fetch_access_token(  # noqa: PLR0913
     }
     if spiffe_id:
         form["client_id"] = spiffe_id
-    async with http() as client:
+    async with _http_for_policy(http, url_policy) as client:
         response = await client.post(found.token_endpoint, data=form)
     body: dict[str, Any] = response.json()
     if response.status_code != 200:
-        raise TokenRequestError(
-            f"{response.status_code} {body.get('error')}: {body.get('error_description')}"
+        allowed_errors = {
+            "invalid_client",
+            "unauthorized_client",
+            "invalid_target",
+            "invalid_scope",
+            "invalid_request",
+            "unsupported_grant_type",
+            "temporarily_unavailable",
+        }
+        code = body.get("error")
+        safe_code = (
+            code if isinstance(code, str) and code in allowed_errors else "token_request_failed"
         )
+        raise TokenRequestError(f"{response.status_code} {safe_code}")
     return body
 
 
@@ -264,11 +311,21 @@ async def call_tool(  # noqa: PLR0913
 
     async def record(response: httpx2.Response) -> None:
         if response.status_code in (401, 403):
-            challenge = response.headers.get("www-authenticate")
+            raw = response.headers.get("www-authenticate", "")
+            fields = [f'resource_metadata="{resource_metadata_url(resource)}"']
+            error = re.search(r'error="(invalid_token|insufficient_scope|invalid_request)"', raw)
+            if error:
+                fields.insert(0, f'error="{error[1]}"')
+            scope = re.search(r'scope="([^"]*)"', raw)
+            if scope and set(scope[1].split()) <= {"notes:read", "notes:write"}:
+                fields.append(f'scope="{scope[1]}"')
+            challenge = "Bearer " + ", ".join(fields)
             auth_failures.append(f"HTTP {response.status_code}: {challenge}")
 
     headers = {"Authorization": f"Bearer {token}"}
-    async with http(headers=headers, event_hooks={"response": [record]}) as client:
+    async with _http_for_policy(
+        http, url_policy, headers=headers, event_hooks={"response": [record]}
+    ) as client:
         try:
             async with Client(streamable_http_client(resource, http_client=client)) as mcp:
                 result = await mcp.call_tool(tool, arguments)
@@ -338,8 +395,20 @@ def issuer_arg(value: str) -> str:
 
 def refusal_event(exc: UntrustedIssuerError | UnsafeUrlError) -> dict[str, Any]:
     if isinstance(exc, UnsafeUrlError):
-        return {"event": "url_refused", "url": exc.url, "reason": exc.reason}
-    return {"event": "issuer_refused", "resource": exc.resource, "issuers": exc.issuers}
+        return {"event": "url_refused", "url": _safe_url(exc.url), "reason": exc.reason}
+    return {
+        "event": "issuer_refused",
+        "resource": _safe_url(exc.resource),
+        "issuers": [_safe_url(url) for url in exc.issuers],
+    }
+
+
+def _safe_url(url: str) -> str:
+    try:
+        parts = urlsplit(url)
+        return urlunsplit((parts.scheme, parts.netloc.rsplit("@", 1)[-1], parts.path, "", ""))
+    except ValueError:
+        return "invalid URL"
 
 
 def add_url_flags(parser: argparse.ArgumentParser) -> None:
@@ -412,6 +481,9 @@ def main(argv: list[str] | None = None) -> None:
     except TokenRequestError as exc:
         print(json.dumps({"event": "token_denied", "error": str(exc)}))
         sys.exit(2)
+    except Exception:
+        print(json.dumps({"event": "client_failed"}))
+        sys.exit(1)
 
 
 if __name__ == "__main__":

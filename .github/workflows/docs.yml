@@ -1,24 +1,33 @@
 name: docs
 
 on:
+  pull_request:
+    paths:
+      - docs/**
+      - zensical.toml
+      - pyproject.toml
+      - uv.lock
+      - .github/workflows/docs.yml
   push:
     branches: [main]
     paths:
       - docs/**
       - zensical.toml
+      - pyproject.toml
+      - uv.lock
       - .github/workflows/docs.yml
   workflow_dispatch:
 
 permissions:
   contents: read
 
-concurrency:
-  group: pages
-  cancel-in-progress: false
-
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    concurrency:
+      group: docs-${{ github.ref }}
+      cancel-in-progress: true
     permissions:
       contents: read
     steps:
@@ -34,9 +43,13 @@ jobs:
           path: site
 
   deploy:
-    if: github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
     needs: build
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    concurrency:
+      group: pages
+      cancel-in-progress: false
     permissions:
       pages: write
       id-token: write

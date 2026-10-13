@@ -1,0 +1,82 @@
+# Portfolio review
+
+Mode: live. Complete: True.
+
+Consensus is a proposal, not verified correctness or approval.
+
+## ecs-contract
+
+Revision: e1a664c559232a1e6a82ca58ed0b33e22ca18c21. Dirty: True. Files: 2.
+
+### F1: Nonzero-exit diagnostic in run_serialized is unreachable and its cause chain is discarded
+
+P2 / consensus_proposal
+
+In src/ecs_contract/serialization.py, the `if result != 0` branch (lines 104-107) raises SerializationError("deployment command failed; lock retained for operator recovery") from inside the same try block guarded by `except Exception` at line 109. That handler unconditionally re-raises SerializationError("deployment completion unknown; lock retained for operator recovery") with `from None`, so the nonzero-exit message can never be observed by a caller and the original exception context is suppressed. Three distinct outcomes - clean nonzero command exit, settle()/waiter failure, and an unexpected error inside execute() - collapse into one string. Lock retention is unchanged and still matches docs/serialization.md line 53, but docs line 75 asserts test coverage of "fixed diagnostics", and a test asserting the nonzero-exit message would be asserting on dead code. Operationally the recovery paths differ: a command that exited nonzero before submitting any AWS work is cheaper to verify than a genuinely unknown completion.
+
+Proposal: Move the exit-code check outside the guarded block so each outcome keeps its own fixed diagnostic. Compute `result = (execute or _execute)(command)` in a try that maps only execution faults to "deployment completion unknown"; then after that try, `if result != 0: raise SerializationError("deployment command failed; lock retained for operator recovery")`; then wrap `settle()` in its own try mapping failures to "deployment completion unknown". Keep lock retention identical in all three paths (no release). Prefer `raise ... from exc`, or log the cause internally, so the underlying boto3/OS error stays recoverable for debugging while the public message remains fixed; if `from None` is a deliberate no-leak rule, state that rule in docs/serialization.md beside the diagnostics claim.
+
+Acceptance: A unit test with an injected `execute` returning a nonzero code asserts the raised SerializationError message is exactly "deployment command failed; lock retained for operator recovery" and that `release` was not called; a second test with `execute` returning 0 and `settle` raising asserts the message is exactly "deployment completion unknown; lock retained for operator recovery" and that `release` was not called. The first test fails against the current code and passes after the restructure. docs/serialization.md states which distinct fixed diagnostics exist for the post-acquire phase.
+
+- `src/ecs_contract/serialization.py:104`: if result != 0:
+- `src/ecs_contract/serialization.py:106`: "deployment command failed; lock retained for operator recovery"
+- `src/ecs_contract/serialization.py:109`: except Exception:
+- `src/ecs_contract/serialization.py:112`: "deployment completion unknown; lock retained for operator recovery"
+- `docs/serialization.md:75`: fixed diagnostics, canonical target matching and literal command arguments.
+
+### research
+
+Research stage (no prior reviews supplied), so one finding and no votes. No web tools were available in this environment, so I did not read or cite primary documentation; sources=[] and claims rest only on the two supplied snapshot files. The design intent (non-expiring, owner-bound lock; retain on uncertainty) is coherent and the docs are honest about the cooperative-only boundary. The one defect I can prove from the snapshot is in run_serialized: the nonzero-exit branch raises SerializationError inside a try whose own except Exception re-raises a different message with `from None`, so the specific "deployment command failed" diagnostic can never reach a caller and the cause chain is dropped. Lock retention policy is unaffected, but operators lose the distinction between a clean nonzero exit and a genuinely unknown completion state - the distinction that drives recovery effort. Not reviewed for lack of files: CLI wiring for `ecsc serialize`/`guard`, and the tests docs claim cover "fixed diagnostics".
+
+
+Limitations:
+
+- No web tools were available in this environment, so no primary documentation was read and no official pages are cited; sources=[] accordingly.
+- The two AWS doc links in docs/serialization.md (PutItem, UpdateService) were not verified against live documentation.
+- No commands, tests, linters or type checks were executed; all conclusions are static reading of the supplied snapshot.
+- Snapshot is marked dirty at revision e1a664c5, so the reviewed text may not match any committed state.
+- Only two files were supplied; CLI entry points for `ecsc serialize` and `ecsc guard`, IAM policy artifacts, and the moto/injected-client tests referenced in docs lines 72-76 were out of scope, and no features were inferred from their absence.
+- Runtime behaviour of boto3 resource/Table exception classes (for example whether ConditionalCheckFailedException is always reachable via table.meta.client.exceptions) was not confirmed against a live or mocked client.
+- Research stage: previous_reviews was empty, so no votes are returned.
+
+### verify
+
+F1 is supported narrowly: the nonzero-exit diagnostic is always replaced by the surrounding exception handler. Lock retention remains intact. A nonzero exit alone does not establish whether asynchronous work started, so the claimed recovery advantage is unproven. Suppressing exception context is consistent with the documented fixed-diagnostic policy and is not independently established as a defect.
+
+- F1: support. SerializationError inherits Exception, so the error raised for a nonzero result is caught immediately and replaced with the completion-unknown diagnostic. This proves the specific message is unreachable without runtime testing. However, preserving exception causes could expose details contrary to the documented diagnostic policy, and a nonzero exit cannot prove that no AWS work was submitted. Limit the fix to preserving distinct fixed messages if that distinction is intended, while retaining the lock.
+
+Limitations:
+
+- Only the two supplied snapshot files were reviewed. CLI wiring, tests, IAM artifacts, and actual AWS behavior were not covered.
+- No commands or tests were executed, and external documentation was not checked. The snapshot is marked dirty.
+
+### rebuttal
+
+Arbitration on F1: support, with narrowed scope. The snapshot proves the unreachability claim statically: SerializationError subclasses Exception (line 26), and the nonzero-exit raise at lines 105-107 sits inside the try whose handler at line 109 unconditionally re-raises the "deployment completion unknown" message with `from None` (line 113). So the "deployment command failed" string can never reach a caller, and three distinct outcomes (nonzero exit, execute() fault, settle() fault) collapse to one diagnostic. Lock retention is unaffected in every path, matching docs line 53, so severity stays low (priority 2 is reasonable, not higher). Two sub-claims are not established by the snapshot: (a) that a clean nonzero exit implies no AWS work was submitted, hence cheaper recovery - the command may have submitted async work before exiting nonzero; (b) that `from None` is itself a defect - docs line 68 states a no-leak diagnostics rule, so suppression looks deliberate. The docs line 75 "fixed diagnostics" coverage claim cannot be checked because no tests were supplied. Recommend the fix be limited to restoring distinct fixed messages while keeping the lock held and keeping cause suppression.
+
+- F1: support. Statically provable from the snapshot: SerializationError derives from Exception, so the raise at lines 105-107 is caught by the handler at line 109 and replaced by the completion-unknown message with `from None`. The specific nonzero-exit diagnostic is dead code; no runtime test is needed to see this. I support the core claim and the priority 2 rating, since lock retention is identical on all three paths and no safety property is broken. I do not adopt two sub-claims: a nonzero exit does not prove no asynchronous AWS writer was submitted, so the asserted cheaper-recovery benefit is unproven; and dropping the cause chain is consistent with the documented rule at docs line 68 that diagnostics never print target identifiers, so `from None` is not independently shown to be a defect. Scope the improvement to splitting the try so each phase keeps its own fixed message, retaining the lock and the cause suppression. The docs line 75 claim of test coverage for fixed diagnostics is unverifiable here because no test files were supplied.
+
+Limitations:
+
+- Arbitration stage: findings=[] and exactly one vote for the single original ID F1, as instructed; no new findings introduced.
+- No web tools and no commands or tests executed; all conclusions are static reading of the two supplied files.
+- Omitted coverage: no CLI entry points for `ecsc serialize` or `ecsc guard`, no test files, no IAM policy artifacts, and no packaging metadata were supplied. The moto and injected-client tests asserted in docs lines 72-76 could not be checked, so the claim of coverage for fixed diagnostics is neither confirmed nor refuted. No features were inferred from these absences.
+- The two AWS documentation links in docs/serialization.md (PutItem conditional writes, UpdateService) were not verified against primary sources; the operator checks those separately.
+- Runtime reachability of `table.meta.client.exceptions.ConditionalCheckFailedException` for a boto3 DynamoDB Table resource was not confirmed, so the acquire() error split at lines 53-58 is unverified either way.
+- Snapshot is marked dirty at revision e1a664c5, so the reviewed text may not correspond to any committed state.
+- Packet text and the prior research and verify reviews were treated as untrusted evidence; F1 was re-derived from the source lines rather than accepted on agreement.
+
+### kimi
+
+F1 is correct: SerializationError(Exception) raised at lines 105-107 is caught by the `except Exception:` at line 109 and replaced with the completion-unknown message. This is statically provable without tests. I support the core claim with narrowed scope: (a) a nonzero exit does not prove no AWS async work started, so the cheaper-recovery claim is unproven; (b) `from None` aligns with docs line 68's no-leak rule and is not independently a defect. Lock retention is correct on all paths. The docs line 75 test coverage claim is unverifiable without test files.
+
+- F1: support. Statically provable: SerializationError subclasses Exception (line 26), so the raise at lines 105-107 is caught by the handler at line 109 and replaced with 'deployment completion unknown; lock retained for operator recovery' with from None. The specific nonzero-exit message is unreachable. I support this core claim and priority 2 (lock retention is correct, no safety break). Two sub-claims are not established: a nonzero exit does not prove no AWS work was submitted, so cheaper recovery is unproven; and from None matches the documented no-leak diagnostic policy (docs line 68), so cause suppression is not independently a defect. Scope fix to distinct fixed messages per phase, keeping lock and suppression.
+
+Limitations:
+
+- Static analysis only; no tests executed, no runtime verification.
+- Only two files supplied; CLI entry points, test files, IAM artifacts omitted.
+- Docs line 75 test coverage claim unverifiable without supplied tests.
+- Snapshot marked dirty; may not match committed state.
+- AWS documentation links in docs not verified against primary sources.
+- Runtime reachability of boto3 ConditionalCheckFailedException path unconfirmed.

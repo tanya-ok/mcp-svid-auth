@@ -1,0 +1,518 @@
+{
+  "mode": "fixture",
+  "provider_versions": {},
+  "complete": true,
+  "notice": "Consensus is a proposal, not verified correctness or approval.",
+  "projects": [
+    {
+      "project": "mcp-svid-auth",
+      "revision": "synthetic-fixture",
+      "dirty": false,
+      "complete": true,
+      "included_files": 1,
+      "omitted": [],
+      "findings": [
+        {
+          "id": "F1",
+          "title": "Synthetic unconditional grant",
+          "priority": 1,
+          "claim": "The fixture ignores the scope input.",
+          "evidence": [
+            {
+              "path": "src/example.py",
+              "line": 2,
+              "quote": "return True"
+            }
+          ],
+          "sources": [],
+          "improvement": "Validate the requested scope.",
+          "acceptance": "An unknown scope is denied.",
+          "status": "consensus_proposal"
+        }
+      ],
+      "reviews": {
+        "research": {
+          "summary": "Synthetic transport demonstration, not a model review.",
+          "findings": [
+            {
+              "id": "F1",
+              "title": "Synthetic unconditional grant",
+              "priority": 1,
+              "claim": "The fixture ignores the scope input.",
+              "evidence": [
+                {
+                  "path": "src/example.py",
+                  "line": 2,
+                  "quote": "return True"
+                }
+              ],
+              "sources": [],
+              "improvement": "Validate the requested scope.",
+              "acceptance": "An unknown scope is denied."
+            }
+          ],
+          "votes": [],
+          "limitations": [
+            "No model or project evaluation was performed."
+          ]
+        },
+        "verify": {
+          "summary": "Synthetic transport demonstration, not a model review.",
+          "findings": [],
+          "votes": [
+            {
+              "finding_id": "F1",
+              "verdict": "support",
+              "reason": "The fixture always returns true.",
+              "evidence": [
+                {
+                  "path": "src/example.py",
+                  "line": 2,
+                  "quote": "return True"
+                }
+              ]
+            }
+          ],
+          "limitations": [
+            "No model or project evaluation was performed."
+          ]
+        },
+        "rebuttal": {
+          "summary": "Synthetic transport demonstration, not a model review.",
+          "findings": [],
+          "votes": [
+            {
+              "finding_id": "F1",
+              "verdict": "support",
+              "reason": "The fixture always returns true.",
+              "evidence": [
+                {
+                  "path": "src/example.py",
+                  "line": 2,
+                  "quote": "return True"
+                }
+              ]
+            }
+          ],
+          "limitations": [
+            "No model or project evaluation was performed."
+          ]
+        }
+      },
+      "last_event": {
+        "time": "2026-10-07T11:32:22.208647+00:00",
+        "project": "mcp-svid-auth",
+        "stage": "rebuttal",
+        "outcome": "completed"
+      }
+    },
+    {
+      "project": "hipaa-fhir-mcp",
+      "revision": "synthetic-fixture",
+      "dirty": false,
+      "complete": true,
+      "included_files": 1,
+      "omitted": [],
+      "findings": [
+        {
+          "id": "F1",
+          "title": "Synthetic unconditional grant",
+          "priority": 1,
+          "claim": "The fixture ignores the scope input.",
+          "evidence": [
+            {
+              "path": "src/example.py",
+              "line": 2,
+              "quote": "return True"
+            }
+          ],
+          "sources": [],
+          "improvement": "Validate the requested scope.",
+          "acceptance": "An unknown scope is denied.",
+          "status": "consensus_proposal"
+        }
+      ],
+      "reviews": {
+        "research": {
+          "summary": "Synthetic transport demonstration, not a model review.",
+          "findings": [
+            {
+              "id": "F1",
+              "title": "Synthetic unconditional grant",
+              "priority": 1,
+              "claim": "The fixture ignores the scope input.",
+              "evidence": [
+                {
+                  "path": "src/example.py",
+                  "line": 2,
+                  "quote": "return True"
+                }
+              ],
+              "sources": [],
+              "improvement": "Validate the requested scope.",
+              "acceptance": "An unknown scope is denied."
+            }
+          ],
+          "votes": [],
+          "limitations": [
+            "No model or project evaluation was performed."
+          ]
+        },
+        "verify": {
+          "summary": "Synthetic transport demonstration, not a model review.",
+          "findings": [],
+          "votes": [
+            {
+              "finding_id": "F1",
+              "verdict": "support",
+              "reason": "The fixture always returns true.",
+              "evidence": [
+                {
+                  "path": "src/example.py",
+                  "line": 2,
+                  "quote": "return True"
+                }
+              ]
+            }
+          ],
+          "limitations": [
+            "No model or project evaluation was performed."
+          ]
+        },
+        "rebuttal": {
+          "summary": "Synthetic transport demonstration, not a model review.",
+          "findings": [],
+          "votes": [
+            {
+              "finding_id": "F1",
+              "verdict": "support",
+              "reason": "The fixture always returns true.",
+              "evidence": [
+                {
+                  "path": "src/example.py",
+                  "line": 2,
+                  "quote": "return True"
+                }
+              ]
+            }
+          ],
+          "limitations": [
+            "No model or project evaluation was performed."
+          ]
+        }
+      },
+      "last_event": {
+        "time": "2026-10-07T11:32:22.217572+00:00",
+        "project": "hipaa-fhir-mcp",
+        "stage": "rebuttal",
+        "outcome": "completed"
+      }
+    },
+    {
+      "project": "mcp-spiffe-bridge",
+      "revision": "synthetic-fixture",
+      "dirty": false,
+      "complete": true,
+      "included_files": 1,
+      "omitted": [],
+      "findings": [
+        {
+          "id": "F1",
+          "title": "Synthetic unconditional grant",
+          "priority": 1,
+          "claim": "The fixture ignores the scope input.",
+          "evidence": [
+            {
+              "path": "src/example.py",
+              "line": 2,
+              "quote": "return True"
+            }
+          ],
+          "sources": [],
+          "improvement": "Validate the requested scope.",
+          "acceptance": "An unknown scope is denied.",
+          "status": "consensus_proposal"
+        }
+      ],
+      "reviews": {
+        "research": {
+          "summary": "Synthetic transport demonstration, not a model review.",
+          "findings": [
+            {
+              "id": "F1",
+              "title": "Synthetic unconditional grant",
+              "priority": 1,
+              "claim": "The fixture ignores the scope input.",
+              "evidence": [
+                {
+                  "path": "src/example.py",
+                  "line": 2,
+                  "quote": "return True"
+                }
+              ],
+              "sources": [],
+              "improvement": "Validate the requested scope.",
+              "acceptance": "An unknown scope is denied."
+            }
+          ],
+          "votes": [],
+          "limitations": [
+            "No model or project evaluation was performed."
+          ]
+        },
+        "verify": {
+          "summary": "Synthetic transport demonstration, not a model review.",
+          "findings": [],
+          "votes": [
+            {
+              "finding_id": "F1",
+              "verdict": "support",
+              "reason": "The fixture always returns true.",
+              "evidence": [
+                {
+                  "path": "src/example.py",
+                  "line": 2,
+                  "quote": "return True"
+                }
+              ]
+            }
+          ],
+          "limitations": [
+            "No model or project evaluation was performed."
+          ]
+        },
+        "rebuttal": {
+          "summary": "Synthetic transport demonstration, not a model review.",
+          "findings": [],
+          "votes": [
+            {
+              "finding_id": "F1",
+              "verdict": "support",
+              "reason": "The fixture always returns true.",
+              "evidence": [
+                {
+                  "path": "src/example.py",
+                  "line": 2,
+                  "quote": "return True"
+                }
+              ]
+            }
+          ],
+          "limitations": [
+            "No model or project evaluation was performed."
+          ]
+        }
+      },
+      "last_event": {
+        "time": "2026-10-07T11:32:22.224620+00:00",
+        "project": "mcp-spiffe-bridge",
+        "stage": "rebuttal",
+        "outcome": "completed"
+      }
+    },
+    {
+      "project": "ecs-contract",
+      "revision": "synthetic-fixture",
+      "dirty": false,
+      "complete": true,
+      "included_files": 1,
+      "omitted": [],
+      "findings": [
+        {
+          "id": "F1",
+          "title": "Synthetic unconditional grant",
+          "priority": 1,
+          "claim": "The fixture ignores the scope input.",
+          "evidence": [
+            {
+              "path": "src/example.py",
+              "line": 2,
+              "quote": "return True"
+            }
+          ],
+          "sources": [],
+          "improvement": "Validate the requested scope.",
+          "acceptance": "An unknown scope is denied.",
+          "status": "consensus_proposal"
+        }
+      ],
+      "reviews": {
+        "research": {
+          "summary": "Synthetic transport demonstration, not a model review.",
+          "findings": [
+            {
+              "id": "F1",
+              "title": "Synthetic unconditional grant",
+              "priority": 1,
+              "claim": "The fixture ignores the scope input.",
+              "evidence": [
+                {
+                  "path": "src/example.py",
+                  "line": 2,
+                  "quote": "return True"
+                }
+              ],
+              "sources": [],
+              "improvement": "Validate the requested scope.",
+              "acceptance": "An unknown scope is denied."
+            }
+          ],
+          "votes": [],
+          "limitations": [
+            "No model or project evaluation was performed."
+          ]
+        },
+        "verify": {
+          "summary": "Synthetic transport demonstration, not a model review.",
+          "findings": [],
+          "votes": [
+            {
+              "finding_id": "F1",
+              "verdict": "support",
+              "reason": "The fixture always returns true.",
+              "evidence": [
+                {
+                  "path": "src/example.py",
+                  "line": 2,
+                  "quote": "return True"
+                }
+              ]
+            }
+          ],
+          "limitations": [
+            "No model or project evaluation was performed."
+          ]
+        },
+        "rebuttal": {
+          "summary": "Synthetic transport demonstration, not a model review.",
+          "findings": [],
+          "votes": [
+            {
+              "finding_id": "F1",
+              "verdict": "support",
+              "reason": "The fixture always returns true.",
+              "evidence": [
+                {
+                  "path": "src/example.py",
+                  "line": 2,
+                  "quote": "return True"
+                }
+              ]
+            }
+          ],
+          "limitations": [
+            "No model or project evaluation was performed."
+          ]
+        }
+      },
+      "last_event": {
+        "time": "2026-10-07T11:32:22.232503+00:00",
+        "project": "ecs-contract",
+        "stage": "rebuttal",
+        "outcome": "completed"
+      }
+    },
+    {
+      "project": "ciso-assistance",
+      "revision": "synthetic-fixture",
+      "dirty": false,
+      "complete": true,
+      "included_files": 1,
+      "omitted": [],
+      "findings": [
+        {
+          "id": "F1",
+          "title": "Synthetic unconditional grant",
+          "priority": 1,
+          "claim": "The fixture ignores the scope input.",
+          "evidence": [
+            {
+              "path": "src/example.py",
+              "line": 2,
+              "quote": "return True"
+            }
+          ],
+          "sources": [],
+          "improvement": "Validate the requested scope.",
+          "acceptance": "An unknown scope is denied.",
+          "status": "consensus_proposal"
+        }
+      ],
+      "reviews": {
+        "research": {
+          "summary": "Synthetic transport demonstration, not a model review.",
+          "findings": [
+            {
+              "id": "F1",
+              "title": "Synthetic unconditional grant",
+              "priority": 1,
+              "claim": "The fixture ignores the scope input.",
+              "evidence": [
+                {
+                  "path": "src/example.py",
+                  "line": 2,
+                  "quote": "return True"
+                }
+              ],
+              "sources": [],
+              "improvement": "Validate the requested scope.",
+              "acceptance": "An unknown scope is denied."
+            }
+          ],
+          "votes": [],
+          "limitations": [
+            "No model or project evaluation was performed."
+          ]
+        },
+        "verify": {
+          "summary": "Synthetic transport demonstration, not a model review.",
+          "findings": [],
+          "votes": [
+            {
+              "finding_id": "F1",
+              "verdict": "support",
+              "reason": "The fixture always returns true.",
+              "evidence": [
+                {
+                  "path": "src/example.py",
+                  "line": 2,
+                  "quote": "return True"
+                }
+              ]
+            }
+          ],
+          "limitations": [
+            "No model or project evaluation was performed."
+          ]
+        },
+        "rebuttal": {
+          "summary": "Synthetic transport demonstration, not a model review.",
+          "findings": [],
+          "votes": [
+            {
+              "finding_id": "F1",
+              "verdict": "support",
+              "reason": "The fixture always returns true.",
+              "evidence": [
+                {
+                  "path": "src/example.py",
+                  "line": 2,
+                  "quote": "return True"
+                }
+              ]
+            }
+          ],
+          "limitations": [
+            "No model or project evaluation was performed."
+          ]
+        }
+      },
+      "last_event": {
+        "time": "2026-10-07T11:32:22.241555+00:00",
+        "project": "ciso-assistance",
+        "stage": "rebuttal",
+        "outcome": "completed"
+      }
+    }
+  ]
+}

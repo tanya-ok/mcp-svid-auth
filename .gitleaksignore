@@ -1,0 +1,4 @@
+# Verified review packet SHA-256, not an API key. Exact historical finding only.
+17fc64df950f3326ec77c97d5cd6b27fcf7c3964:docs/quorum-portfolio/manifest.json:generic-api-key:4
+# Same packet hash in the working tree, for directory scans.
+docs/quorum-portfolio/manifest.json:generic-api-key:4

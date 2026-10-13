@@ -15,6 +15,11 @@ concurrency:
 jobs:
   check:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12", "3.13"]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -22,6 +27,10 @@ jobs:
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
           version: "0.11.19"
+          python-version: ${{ matrix.python-version }}
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .nvmrc
       - run: uv sync --locked
       - run: uv run ruff check
       - run: uv run ruff format --check .
@@ -29,3 +38,10 @@ jobs:
       - name: Config docs drift check
         run: uv run python scripts/gen_config_docs.py --check
       - run: uv run pytest -q
+      - name: Build and inspect publication artifacts
+        run: make package
+      - name: Install independent MCP client
+        working-directory: examples/typescript-client
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Check independent MCP client
+        run: make interop

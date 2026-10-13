@@ -1,0 +1,8 @@
+{"time": "2026-10-07T16:00:31.028382+00:00", "project": "ecs-contract", "stage": "research", "outcome": "started", "provider": "claude"}
+{"time": "2026-10-07T16:01:47.051456+00:00", "project": "ecs-contract", "stage": "research", "outcome": "evidence_quote_mismatch", "provider": "claude"}
+{"time": "2026-10-07T16:06:08.014067+00:00", "project": "ecs-contract", "stage": "research", "outcome": "started", "provider": "claude"}
+{"time": "2026-10-07T16:07:27.089262+00:00", "project": "ecs-contract", "stage": "research", "outcome": "completed", "provider": "claude"}
+{"time": "2026-10-07T16:07:27.144728+00:00", "project": "ecs-contract", "stage": "verify", "outcome": "started", "provider": "codex"}
+{"time": "2026-10-07T16:07:45.334827+00:00", "project": "ecs-contract", "stage": "verify", "outcome": "completed", "provider": "codex"}
+{"time": "2026-10-07T16:07:45.340617+00:00", "project": "ecs-contract", "stage": "rebuttal", "outcome": "started", "provider": "claude"}
+{"time": "2026-10-07T16:08:13.201938+00:00", "project": "ecs-contract", "stage": "rebuttal", "outcome": "completed", "provider": "claude"}
