@@ -2,6 +2,8 @@
 
 Local checkout review and task reconciliation. No application tests, live demo, remote CI or release checks were rerun for this checkpoint. Validation counts below are recorded evidence from the cited project documents, not fresh results. All five checkouts were clean before this tracking update.
 
+The `ciso-assistance` project was later renamed IT GRC.
+
 ## Where work stopped
 
 | Project | Inspected HEAD | Recorded baseline | Remaining boundary |

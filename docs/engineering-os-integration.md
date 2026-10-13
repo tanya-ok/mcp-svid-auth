@@ -111,7 +111,8 @@ fall back to a cloud service or imply complete retrieval when a source is absent
 - mcp-spiffe-bridge: workload transport integration where needed.
 - hipaa-fhir-mcp: synthetic domain example behind the security boundary.
 - ecs-contract: infrastructure/application ownership contracts.
-- ciso-assistance: evidence review and human approval example.
+- it-grc (IT GRC, not yet public): pushes executed lab evidence into CISO
+  Assistant CE as the GRC system of record; approval stays a human decision.
 
 Use a private registry with stable project IDs and local path bindings. Do not
 merge all task databases or private vaults into one shared cloud prompt. Moving
@@ -190,7 +191,8 @@ These counts do not include the earlier failed requests.
 See the [accepted peer record](quorum-engineering-os/kimi.json). New live run
 manifests now require Kimi across all six projects. The prepared portfolio run
 `20261007T122242280168Z` contains mcp-svid-auth, hipaa-fhir-mcp,
-mcp-spiffe-bridge, ecs-contract, ciso-assistance and engineering-os. It is a
+mcp-spiffe-bridge, ecs-contract, ciso-assistance (since renamed IT GRC) and
+engineering-os. It is a
 prepared source snapshot, not evidence that the full new portfolio was reviewed.
 Each project proceeds through the three original stages and then Kimi. Failures
 in one project do not suppress reviews of independent projects. A missing Kimi

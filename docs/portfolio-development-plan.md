@@ -34,29 +34,23 @@ The local operator can use the base viewer or enable the human sign-in profile w
 
 ## Optional evidence-oriented demonstration
 
-The separate `ciso-assistance` project is a local evidence review application.
-Its Kubernetes variant uses its own namespace in the same Lima VM and imports
-safe outcomes from the shared eighteen-scenario test driver. It displays observed
-gaps separately from missing evidence, records a human review and exports a
-report. A local model drafts a summary from canonical findings; it does not
-decide whether the security boundaries passed.
+The separate IT GRC project (`it-grc`, not yet public; formerly
+`ciso-assistance`) pushes executed lab evidence into the unmodified CISO
+Assistant Community edition (CE), used as the GRC system of record. CE runs on
+k3s in its own Lima VM, `it-grc`, not in the shared security-lab VM. Its input
+is the credential-free demo report that `make demo` writes, or a retained copy.
+The bridge maps the eighteen scenarios to the public NIST SP 800-66 rev2
+framework, sets at most `partially_compliant` with status `in_review`, and
+leaves `compliant`, `done` and evidence approval to a human reviewer in CE.
 
-This is an additional consumer of the lab's evidence, not a new authentication
-authority. It has no Kubernetes API credential, no automatic remediation and
-no additional FHIR access. Its separate UI is not yet covered by the Headlamp
-sign-in gate. Linking the screens is useful for a presentation, but shared
-single sign-on needs its own approved client, callback and application role.
-
-Its saved integrated evaluation records both assessments, actual local model
-drafts and source revisions; its scoped teardown preserves the shared namespace
-identities. Its version 0.1.1 evaluation also records responsive checks, a
-28.63-second browser walkthrough and an independently extracted source/demo
-archive. These are that project's recorded results, not checks rerun here.
-Later live MCP access must use a separately attested
-SPIRE workload and its own narrowly scoped token. The Headlamp session and a
-Google ID token must never serve as that credential. Keep its namespace,
-review-state storage and teardown separate from the identity provider and the
-base lab; the VM is shared, so coordinate complete runtime shutdown.
+This is a downstream consumer of the lab's saved evidence, not a new
+authentication authority. It has no lab Kubernetes API credential, no automatic
+remediation and no FHIR access. Its CE sign-in is separate from the Headlamp
+sign-in gate; shared single sign-on would need its own approved client, callback
+and application role. A saved report is dated evidence, not a live check of the
+lab. Any later live access to the lab must use a separately attested SPIRE
+workload and its own narrowly scoped token. The Headlamp session and a Google ID
+token must never serve as that credential. The two VMs have separate lifecycles.
 
 ## Human identity demo: optional OIDC provider
 
@@ -160,10 +154,10 @@ Work through one accepted increment at a time. The order below is a development 
 - `mcp-svid-auth`: the 2026-10-06 baseline passed 278 tests, lint, formatting, strict types, generated configuration and documentation builds. All eighteen real Lima/Kubernetes/containerd scenarios and teardown passed. The viewer was restarted with nine ready services and five browser-verified views. See [lab evidence](kubernetes-lab.md) and [UI evidence](headlamp-ui.md).
 - The final root offline gate passed 467 tests, lint, formatting, strict types, generated configuration, strict documentation build, and source/history secret scans on 2026-10-06, including three setup-lifecycle regressions. The main profile passed eleven real WebAuthn/OIDC checks, four closed Google setup checks with fake inputs, five protected desktop views and browser logout. Two setup repetitions preserved the viewer. Real Google sign-in and physical-device completion remain unverified.
 - A failed-start check first proved refusal of the legacy profile without changing pod identities. The operator then approved its ephemeral database deletion; the native replacement passed. Hosted Login V2 reached the required passkey screen without a password form. Sixty-four five-second samples across the final recovery cycle including native startup observed a maximum of 1858.1 MiB in the 4 GiB guest, excluding host overhead and the local model.
-- A fresh main-checkout rebuild passed eighteen scenarios at 14:55 UTC; an enabled-profile repeat passed eighteen at 15:02 UTC with fresh relay credential and FHIR audit state. A later cycle failed after macOS disk exhaustion and guest I/O errors. After the operator-approved VM restart, the complete fresh cycle from 15:25 to 15:31 UTC passed eighteen scenarios, native startup, viewer stop/idempotence, identity-backend-loss recovery, eleven identity checks, four closed Google setup checks, five desktop views, the 390 x 844 mobile layout and final scoped teardown. CISO's namespace UID and the shared VM were preserved at every phase. The VM must not be restarted without accounting for its CISO consumer.
+- A fresh main-checkout rebuild passed eighteen scenarios at 14:55 UTC; an enabled-profile repeat passed eighteen at 15:02 UTC with fresh relay credential and FHIR audit state. A later cycle failed after macOS disk exhaustion and guest I/O errors. After the operator-approved VM restart, the complete fresh cycle from 15:25 to 15:31 UTC passed eighteen scenarios, native startup, viewer stop/idempotence, identity-backend-loss recovery, eleven identity checks, four closed Google setup checks, five desktop views, the 390 x 844 mobile layout and final scoped teardown. CISO's namespace UID and the shared VM were preserved at every phase. Its successor, IT GRC, now runs in its own VM.
 - `hipaa-fhir-mcp`: the shared integration has actual allowed and denied mTLS/OAuth requests, a verified caller and safe audit. Its local gate was freshly rerun on 2026-10-06: ten tests, typecheck, build, Biome and the PHI sweep passed. The standalone HTTP response validation and stdio schema rejection gaps remain.
 - `mcp-spiffe-bridge`: the local gate was freshly rerun on 2026-10-06: 56 tests, typecheck, lint and build passed, including real local TLS sockets and credential failure cases. Lint reports nine pre-existing warnings. The eighteen-scenario lab was also freshly rerun that day. Automatic reconnect remains unimplemented.
 - `ecs-contract`: the last recorded gate is 2026-10-04: 131 tests, lint, formatting and strict types. No new ECS tests or AWS calls were run for this update. Claude's board proposal remains a separate demo plan.
-- `ciso-assistance`: its updated 2026-10-06 evaluation record reports 27 offline tests and six expected fixture outcomes. Saved integrated artifacts record all eighteen shared scenarios, both assessments, both actual local model drafts, denied access to notes-a and scoped teardown preserving the shared namespace identities. Version 0.1.1 records responsive checks at 390 x 844 and 1280 x 900, a 28.63-second browser walkthrough, archive verification and a fresh model review through the UI. This is independently recorded evidence, not a validation rerun by the root coordinator or proof of shared ZITADEL sign-in. The coordinator separately verified its version 0.1.1 readiness after the operator-approved shared VM restart.
+- `it-grc` (formerly `ciso-assistance`): its 2026-10-13 record pushed that day's eighteen-scenario lab report into CE v4.1.1 in the `it-grc` VM. The audit held 20 `partially_compliant` and 132 `not_assessed` of 152 assessable requirements, nine evidence objects in review and none approved; verify found no drift. This is that project's recorded result, not a check rerun by the root coordinator, and not HIPAA compliance. Results of the retired version 0.1.1 prototype are historical.
 
 No live AWS changes, real clinical records, publication, remote CI runs, or GitHub writes were performed. Raw private planning notes and private identifiers are not included in these documents.

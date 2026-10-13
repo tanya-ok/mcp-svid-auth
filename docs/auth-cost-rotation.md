@@ -70,6 +70,7 @@ Three real SPIRE fetches returned one distinct assertion and one distinct `jti`;
 the assertion was accepted. Public prepublication, old/new public-key overlap and
 both MCP token calls passed during planned rotation. Scoped teardown passed and
 the pre-existing CISO namespace UID was unchanged; the shared VM remained running.
+That CISO project was later renamed IT GRC and moved to its own VM.
 The 525-test offline suite, strict docs build, identifier scan and source/history
 secret scans passed. The secret scanner excludes one exact historical finding
 verified against the review packet SHA-256; no credential or general rule is excluded.
