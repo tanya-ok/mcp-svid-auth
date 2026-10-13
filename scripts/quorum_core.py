@@ -41,7 +41,7 @@ PROJECT_FILES = {
         "src/ecs_contract/sources.py",
         "src/ecs_contract/sync.py",
     },
-    "ciso-assistance": {"src/ciso_assistance/core.py", "src/ciso_assistance/server.py"},
+    "it-grc": {"src/it_grc/grc_push.py", "src/it_grc/grc_client.py"},
     "engineering-os": {
         "standards/canonical/work-tracking.md",
         "dashboard/src/beads.ts",
