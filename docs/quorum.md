@@ -125,8 +125,8 @@ the coordinator. Legacy manifests without this mode retain their web-tool behavi
 
 Each registered project now has an explicit focused source allowlist in
 `scripts/quorum_core.py`: authorization/policy, FHIR configuration/security stubs,
-bridge credential lifecycle, ECS resolution/sync, CISO assessment/HTTP, and the
-Engineering OS tracker model/store. This is one bounded question per project,
+bridge credential lifecycle, ECS resolution/sync, the IT GRC push and REST
+client, and the Engineering OS tracker model/store. This is one bounded question per project,
 not complete codebase coverage. Untracked files, vaults, private configuration,
 symlinks escaping the checkout and credential-shaped content stay excluded.
 Limits remain 100 files, 60,000 bytes per file and 180,000 source characters.

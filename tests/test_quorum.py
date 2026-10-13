@@ -13,7 +13,14 @@ from scripts import quorum
 from scripts import quorum_core as core
 from scripts import quorum_providers as providers
 from scripts import quorum_tasks as tasks
-from scripts.quorum_models import STAGES, Evidence, QuorumError, Review, validate_review
+from scripts.quorum_models import (
+    PROJECTS,
+    STAGES,
+    Evidence,
+    QuorumError,
+    Review,
+    validate_review,
+)
 
 
 def coordinator(tmp_path: Path) -> core.Coordinator:
@@ -152,6 +159,11 @@ def test_snapshot_excludes_untracked_files_and_escaping_symlinks(
     packet = core.snapshot("hipaa-fhir-mcp", tmp_path)
     assert {s.path for s in packet.sources} == {"README.md", "src/safe.ts"}
     assert packet.omitted == ["src/link.ts"]
+
+
+def test_every_project_has_a_focused_source_selection() -> None:
+    assert set(core.PROJECT_FILES) == set(PROJECTS)
+    assert core.PROJECT_FILES["it-grc"] == {"src/it_grc/grc_push.py", "src/it_grc/grc_client.py"}
 
 
 def test_engineering_snapshot_excludes_vaults_and_private_config(

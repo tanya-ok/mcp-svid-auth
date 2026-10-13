@@ -13,7 +13,7 @@ PROJECTS = (
     "hipaa-fhir-mcp",
     "mcp-spiffe-bridge",
     "ecs-contract",
-    "ciso-assistance",
+    "it-grc",
     "engineering-os",
 )
 STAGES = ("research", "verify", "rebuttal")
