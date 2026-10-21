@@ -50,7 +50,7 @@ sequenceDiagram
     AG->>AZ: GET /.well-known/oauth-authorization-server
     AZ-->>AG: issuer, token_endpoint
     AG->>SA: FetchJWTSVID(aud = issuer)
-    SA-->>AG: JWT-SVID (60s demo; max 5 min)
+    SA-->>AG: JWT-SVID (60s demo, max 5 min)
     AG->>AZ: POST /token client_credentials<br/>client_assertion = JWT-SVID<br/>resource = notes-a
     AZ->>SA: FetchJWTBundles
     AZ->>AZ: verify SVID, check policy.yaml
