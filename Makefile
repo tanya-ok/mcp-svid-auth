@@ -4,6 +4,7 @@ check: lint docs-check test
 
 test:
 	uv run pytest -q
+	node --test tests/headlamp-settings.test.mjs
 
 lint:
 	uv run ruff check

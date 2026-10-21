@@ -56,7 +56,7 @@ Any change that touches one of these needs a test that proves the invariant stil
 - Fixtures and examples use `example.org` trust domains only.
 - `tests/test_no_identifiers.py` scans the tree and full history. It reads a git-ignored `tests/denylist.txt`; never commit that file and never put its contents anywhere tracked.
 - Commit author email must be the maintainer's personal address. Check before the first commit in a new clone.
-- The roadmap is public in `.beads/issues.jsonl`. Issues labelled `personal` (writing, newsletter, career) stay local and are filtered out of the export. Drop the `owner` field from the export.
+- Beads task exports stay local and untracked. A public roadmap requires an explicitly reviewed minimal projection. Labels `local`, `private`, `security` or `personal` always block public export; omit actor fields and task details.
 
 ## Style
 

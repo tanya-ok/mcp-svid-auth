@@ -1,5 +1,28 @@
 (function () {
 	"use strict";
+	// Headlamp otherwise lists namespaced resources at cluster scope. These are
+	// display defaults only; Kubernetes RBAC remains the authorization boundary.
+	const namespaces = ["security-lab", "spire-system"];
+	const settingsKey = "cluster_settings.main";
+	let settings = {};
+	try {
+		const saved = JSON.parse(window.localStorage.getItem(settingsKey) || "{}");
+		if (saved && typeof saved === "object" && !Array.isArray(saved)) {
+			settings = saved;
+		}
+	} catch {
+		// Invalid or unavailable browser state must never broaden server access.
+	}
+	settings.allowedNamespaces = namespaces;
+	delete settings.allowedNamespacesSelector;
+	if (!namespaces.includes(settings.defaultNamespace)) {
+		settings.defaultNamespace = namespaces[0];
+	}
+	try {
+		window.localStorage.setItem(settingsKey, JSON.stringify(settings));
+	} catch {
+		throw new Error("Local viewer namespace settings are unavailable");
+	}
 	const { React, registerRoute, registerSidebarEntry } = window.pluginLib;
 	const h = React.createElement;
 	const palette = {

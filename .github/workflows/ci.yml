@@ -38,6 +38,8 @@ jobs:
       - name: Config docs drift check
         run: uv run python scripts/gen_config_docs.py --check
       - run: uv run pytest -q
+      - name: Headlamp namespace regression checks
+        run: node --test tests/headlamp-settings.test.mjs
       - name: Build and inspect publication artifacts
         run: make package
       - name: Install independent MCP client

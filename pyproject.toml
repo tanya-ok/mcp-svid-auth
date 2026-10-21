@@ -60,6 +60,7 @@ packages = ["src/mcp_svid_auth"]
 
 [tool.hatch.build.targets.sdist]
 exclude = [
+    "/.ai-assurance",
     "/.beads",
     "/.data",
     "/.venv-docs",

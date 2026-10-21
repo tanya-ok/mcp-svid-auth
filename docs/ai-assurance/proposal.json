@@ -1,0 +1,114 @@
+{
+  "proposal_schema": 1,
+  "status": "pending-maintainer-review",
+  "installation_authorized": false,
+  "basis_commit": "89878526aad4dec490b98aaf68d3af17e80a09bd",
+  "source": {
+    "repository": "ai-assurance",
+    "commit": "353d374a00b43479870a6dee300dd200529cc60c",
+    "version": "0.2.1"
+  },
+  "profile_candidate": {
+    "schema": 2,
+    "project_id": "mcp-svid-auth",
+    "scope": "Offline OAuth resource/scopes, credential lifecycle and audit regressions; no live identity or deployment attestation.",
+    "ci": {
+      "repository": "tanya-ok/mcp-svid-auth",
+      "workflow": ".github/workflows/ci.yml"
+    },
+    "controls": {
+      "access-boundary": {
+        "applicable": true,
+        "claim": "Access tokens stay audience-bound and tools enforce declared scopes.",
+        "ci_checks": [
+          "check (3.12)",
+          "check (3.13)"
+        ]
+      },
+      "data-exposure": {
+        "applicable": true,
+        "claim": "Credential and token errors do not expose secrets; audit output stays bounded.",
+        "ci_checks": [
+          "check (3.12)",
+          "check (3.13)"
+        ]
+      },
+      "untrusted-instructions": {
+        "applicable": true,
+        "claim": "Text from a caller cannot add a tool scope or authorize incoming-token forwarding.",
+        "ci_checks": [
+          "check (3.12)",
+          "check (3.13)"
+        ]
+      },
+      "consequential-actions": {
+        "applicable": true,
+        "claim": "An unavailable refresh fails closed and stops the stdio child.",
+        "ci_checks": [
+          "check (3.12)",
+          "check (3.13)"
+        ]
+      },
+      "evidence-lineage": {
+        "applicable": true,
+        "claim": "Audit changes are detected relative to a separately trusted terminal checkpoint.",
+        "ci_checks": [
+          "check (3.12)",
+          "check (3.13)"
+        ]
+      },
+      "bounded-claims": {
+        "applicable": true,
+        "claim": "Publication excludes local assurance state and does not imply live lab or physical-passkey validation.",
+        "ci_checks": [
+          "check (3.12)",
+          "check (3.13)"
+        ]
+      }
+    }
+  },
+  "evidence_plan": {
+    "access-boundary": {
+      "paths": [
+        "tests/test_authz.py",
+        "tests/test_resource_server.py"
+      ],
+      "limitations": "Source inspection only; a passing job is not proof of every claim."
+    },
+    "data-exposure": {
+      "paths": [
+        "tests/test_authz_hardening.py",
+        "tests/test_audit_chain.py"
+      ],
+      "limitations": "Source inspection only; a passing job is not proof of every claim."
+    },
+    "untrusted-instructions": {
+      "paths": [
+        "tests/test_no_passthrough.py",
+        "tests/test_resource_server.py"
+      ],
+      "limitations": "Source inspection only; a passing job is not proof of every claim."
+    },
+    "consequential-actions": {
+      "paths": [
+        "tests/test_stdio_wrapper.py"
+      ],
+      "limitations": "Source inspection only; a passing job is not proof of every claim."
+    },
+    "evidence-lineage": {
+      "paths": [
+        "tests/test_audit_chain.py"
+      ],
+      "limitations": "Source inspection only; a passing job is not proof of every claim."
+    },
+    "bounded-claims": {
+      "paths": [
+        "tests/test_distribution.py",
+        "README.md",
+        "docs/security.md"
+      ],
+      "limitations": "Source inspection only; a passing job is not proof of every claim."
+    }
+  },
+  "remaining_gaps": "CI has no live shared Kubernetes or physical-passkey proof. Semantic prompt injection and continuous human-session revocation need separate evaluations."
+}

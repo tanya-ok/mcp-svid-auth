@@ -285,3 +285,56 @@ Identity references: [ZITADEL Kubernetes deployment](https://zitadel.com/docs/se
 and [OIDC ID-token validation](https://openid.net/specs/openid-connect-core-1_0.html#IDTokenValidation).
 See also [Google identity-provider setup](https://zitadel.com/docs/guides/integrate/identity-providers/google)
 and [ZITADEL Authorization Code with PKCE](https://zitadel.com/docs/guides/integrate/login/oidc/login-users).
+
+## Namespace-scoped resource browsing
+
+The plugin initializes Headlamp's `main` cluster settings with the explicit
+`security-lab` and `spire-system` namespace list before registering its routes.
+A fresh browser otherwise attempts cluster-wide resource lists, which the
+read-only ServiceAccount correctly rejects. Existing appearance settings are
+preserved, invalid default namespaces are replaced, and selector-based namespace
+expansion is removed. If browser storage cannot save the bounded settings, plugin
+initialization fails with a fixed error rather than claiming successful setup.
+
+This is a frontend request-routing preference, not an authorization grant.
+Kubernetes RoleBindings remain namespace-scoped; cluster-wide lists, Nodes,
+Secrets and mutations remain unavailable. Headlamp's built-in cluster-only views
+can still show permission denials. Use the Security lab view or namespaced Pods,
+Services and Deployments for the supported demo.
+
+The pinned [Headlamp cluster-settings contract](https://github.com/kubernetes-sigs/headlamp/blob/v0.45.0/frontend/src/helpers/clusterSettings.ts)
+and [namespaced list requests](https://github.com/kubernetes-sigs/headlamp/blob/v0.45.0/frontend/src/lib/k8s/KubeObject.ts)
+define this behavior. Client settings can be edited, so they must never replace
+server-side RBAC or the existing OIDC approval gate.
+
+### Local acceptance on 2026-10-20
+
+The fix was checked from the `84a38c4` base plus the local plugin/test changes in
+a separate disposable VM, not the operator's stopped lab. A fresh browser opened
+Pods (10 rows during the scenario run), Deployments (8) and Services (7) without
+the previous permission error. These are observations from that test run, not
+fixed resource counts. Direct reads of the supported namespaced resources
+returned 200. Cluster-wide Pods, Nodes, Secrets and an unrelated namespace
+returned 403; a pod mutation returned 405. No RBAC grants were widened.
+
+`make check` passed 560 Python tests on Python 3.13.9, 8 new JavaScript
+regressions, Ruff and strict mypy. The strict documentation build, actionlint and
+redacted secret scan passed. `make demo` passed all 18 scenarios; the retained
+private report has SHA-256
+`c33f4d7159c0aa7c641cd2a497f8e2f6e0fe04e27c5502915b9cdf4df542331a`.
+`make down` removed only this validation VM's test namespaces, and the validation
+VM was stopped. The original lab VMs and operator profile were unchanged.
+
+This browser acceptance uses the supported standalone read-only viewer in an
+identity-free test VM. It does not claim a new physical-passkey ceremony or a
+combined manual OIDC acceptance after the fix. The owner must repeat that step.
+
+| Security invariant | Effect of this change | Check |
+|---|---|---|
+| Deny by default | Server policy and RBAC unchanged; browser defaults are not authority | Existing RBAC tests and live 403/405 checks |
+| Audience binding | No token code changed | Existing token checks and demo scenario 4 |
+| No token passthrough | No forwarding code changed | Existing tests and demo scenario 8 |
+| Strict token checks | No token format or validation changed | Existing token tests and full demo |
+| No secrets in output | Storage failure uses one fixed error | New unavailable-storage regression |
+| Fail closed | Refresh and child shutdown unchanged | Existing expiry tests and full demo |
+| Runtime keys | No keys added to source or browser settings | Identifier tests and secret scan |

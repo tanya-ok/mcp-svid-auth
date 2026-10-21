@@ -10,6 +10,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 FORBIDDEN_PARTS = {
+    ".ai-assurance",
     ".git",
     ".venv",
     ".venv-docs",
