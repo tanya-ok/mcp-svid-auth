@@ -57,6 +57,8 @@ DEFAULT_SIGNING_ROTATION_SECONDS = 3600
 SIGNING_PREPUBLISH_SECONDS = 60
 MAX_RETIRED_SIGNING_KEYS = 6
 MAX_TOKEN_REQUEST_BYTES = 16_384
+TOKEN_EXCHANGE_GRANT = "urn:ietf:params:oauth:grant-type:token-exchange"  # noqa: S105 - URN
+ACCESS_TOKEN_TYPE = "urn:ietf:params:oauth:token-type:access_token"  # noqa: S105 - URN
 # reject: jti required, each (sub, jti) accepted once. allow-reuse-within-lifetime: jti optional and
 # not tracked, for SVID sources that cache and re-serve one SVID (SPIRE 1.15.3 agent, see docs).
 SVID_REPLAY_MODES = ("reject", "allow-reuse-within-lifetime")
@@ -156,6 +158,7 @@ class AuthzServer:
     _pending_key: tuple[ec.EllipticCurvePrivateKey, str, float] | None = None
     _retired_keys: list[tuple[dict[str, Any], float]] = field(default_factory=list)
     _signing_lock: threading.RLock = field(default_factory=threading.RLock)
+    token_exchange: bool = False
     policy_path: Path | None = None
     _policy_digest: str | None = None
     _reload_lock: threading.Lock = field(default_factory=threading.Lock)
@@ -254,7 +257,8 @@ class AuthzServer:
             "issuer": self.issuer,
             "token_endpoint": f"{self.issuer}/token",
             "jwks_uri": f"{self.issuer}/jwks.json",
-            "grant_types_supported": ["client_credentials"],
+            "grant_types_supported": ["client_credentials"]
+            + ([TOKEN_EXCHANGE_GRANT] if self.token_exchange else []),
             "token_endpoint_auth_methods_supported": ["spiffe_jwt"],
         }
 
@@ -336,9 +340,74 @@ class AuthzServer:
             # RFC 7523 section 3: remember each jti for as long as the assertion would be accepted.
             self.replay_cache.add(sub, jti, int(claims["exp"]) + _CLOCK_SKEW, time.time())
 
+    def _verify_subject_token(self, token: str) -> dict[str, Any]:
+        """Verify an access token this server issued, for RFC 8693 delegation only."""
+        try:
+            header = jwt.get_unverified_header(token)
+        except jwt.PyJWTError as exc:
+            raise AuthError("invalid_grant", "malformed subject token") from exc
+        if header.get("typ") != "at+jwt" or header.get("alg") != ACCESS_TOKEN_ALG:
+            raise AuthError("invalid_grant", "unsupported subject token")
+        with self._signing_lock:
+            keys = {self.kid: _public_jwk(self.signing_key, self.kid)}
+            keys.update({jwk["kid"]: jwk for jwk, _ in self._retired_keys})
+        jwk = keys.get(str(header.get("kid")))
+        if jwk is None:
+            raise AuthError("invalid_grant", "subject token key unknown")
+        try:
+            claims: dict[str, Any] = jwt.decode(
+                token,
+                jwt.PyJWK.from_dict(jwk),
+                algorithms=[ACCESS_TOKEN_ALG],
+                issuer=self.issuer,
+                options={
+                    "require": ["iss", "sub", "aud", "exp", "iat", "scope"],
+                    "verify_aud": False,
+                },
+                leeway=_CLOCK_SKEW,
+            )
+        except jwt.ExpiredSignatureError as exc:
+            raise AuthError("invalid_grant", "subject token expired") from exc
+        except jwt.PyJWTError as exc:
+            raise AuthError(
+                "invalid_grant", "subject token invalid", 400, type(exc).__name__
+            ) from exc
+        if "act" in claims:
+            raise AuthError("invalid_request", "chained delegation is not supported")
+        if not isinstance(claims["aud"], str) or not isinstance(claims["scope"], str):
+            raise AuthError("invalid_grant", "subject token invalid")
+        return claims
+
+    def _delegate(
+        self, form: dict[str, str], actor: str, resource: str, policy: Policy, expiry: int
+    ) -> tuple[str, frozenset[str], int]:
+        """RFC 8693 on-behalf-of: bounded by subject and actor scopes and subject expiry."""
+        if form.get("subject_token_type") != ACCESS_TOKEN_TYPE:
+            raise AuthError("invalid_request", "unsupported subject_token_type")
+        if form.get("requested_token_type", ACCESS_TOKEN_TYPE) != ACCESS_TOKEN_TYPE:
+            raise AuthError("invalid_request", "unsupported requested_token_type")
+        if "actor_token" in form:
+            # The client assertion already authenticates the actor.
+            raise AuthError("invalid_request", "actor_token is not supported")
+        delegated = self._verify_subject_token(form.get("subject_token") or "")
+        subject = str(delegated["sub"])
+        if subject == actor:
+            raise AuthError("invalid_request", "actor and subject must differ")
+        if str(delegated["aud"]).rstrip("/") != resource.rstrip("/"):
+            raise AuthError("invalid_target", "subject token audience does not match resource")
+        wanted = parse_scope(form.get("scope"))
+        if not wanted:
+            raise AuthError("invalid_scope", "scope is required for delegation")
+        scopes = policy.grant(actor, resource, wanted)
+        if not wanted <= set(str(delegated["scope"]).split()):
+            raise AuthError("invalid_scope", "requested scope exceeds the delegation")
+        return subject, scopes, min(expiry, int(delegated["exp"]))
+
     def issue(self, form: dict[str, str]) -> dict[str, Any]:
-        if form.get("grant_type") != "client_credentials":
-            raise AuthError("unsupported_grant_type", "only client_credentials is supported")
+        grant_type = form.get("grant_type")
+        exchange = grant_type == TOKEN_EXCHANGE_GRANT and self.token_exchange
+        if grant_type != "client_credentials" and not exchange:
+            raise AuthError("unsupported_grant_type", "grant type is not supported")
         if form.get("client_assertion_type") != CLIENT_ASSERTION_TYPE:
             raise AuthError("invalid_client", "unsupported client_assertion_type", 401)
         assertion = form.get("client_assertion")
@@ -353,20 +422,28 @@ class AuthzServer:
         client_id = form.get("client_id")
         if client_id is not None and client_id != spiffe_id:
             raise AuthError("invalid_client", "client_id does not match SVID", 401)
-        scopes = policy.grant(spiffe_id, resource, parse_scope(form.get("scope")))
+        now = int(time.time())
+        subject = spiffe_id
+        expiry = now + self.token_ttl
+        extra: dict[str, Any] = {}
+        if exchange:
+            subject, scopes, expiry = self._delegate(form, spiffe_id, resource, policy, expiry)
+            extra = {"act": {"sub": spiffe_id}}
+        else:
+            scopes = policy.grant(spiffe_id, resource, parse_scope(form.get("scope")))
         if not self.subject_budget.take(spiffe_id):
             raise AuthError("temporarily_unavailable", "subject request budget exceeded", 429)
         self._check_jti(spiffe_id, verified, record=True)
-        now = int(time.time())
         claims = {
             "iss": self.issuer,
-            "sub": spiffe_id,
+            "sub": subject,
             "client_id": spiffe_id,
             "aud": resource.rstrip("/"),
             "scope": " ".join(sorted(scopes)),
             "iat": now,
-            "exp": now + self.token_ttl,
+            "exp": expiry,
             "jti": uuid.uuid4().hex,
+            **extra,
         }
         with self._signing_lock:
             self._advance_signing_keys()
@@ -379,12 +456,15 @@ class AuthzServer:
                 algorithm=ACCESS_TOKEN_ALG,
                 headers={"kid": self.kid, "typ": "at+jwt"},
             )
-        return {
+        body: dict[str, Any] = {
             "access_token": token,
             "token_type": "Bearer",
-            "expires_in": self.token_ttl,
+            "expires_in": expiry - now,
             "scope": claims["scope"],
         }
+        if exchange:
+            body["issued_token_type"] = ACCESS_TOKEN_TYPE
+        return body
 
     async def token_endpoint(self, request: Request) -> Response:
         form: dict[str, str] = {}
@@ -583,6 +663,11 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_POLICY_POLL_SECONDS,
         help="how often to check the policy file for changes; 0 disables polling (SIGHUP only)",
     )
+    parser.add_argument(
+        "--token-exchange",
+        action="store_true",
+        help="enable RFC 8693 on-behalf-of exchange for tokens this server issued; off by default",
+    )
     parser.add_argument("--host", default="127.0.0.1", help="listen address")
     parser.add_argument("--port", type=int, default=8100, help="listen port")
     parser.add_argument(
@@ -666,6 +751,7 @@ def main(argv: list[str] | None = None) -> None:
         request_budget=WindowBudget(args.token_requests_per_second, max_keys=1),
         subject_budget=WindowBudget(args.subject_requests_per_second),
         signing_rotation_seconds=args.signing_rotation_seconds,
+        token_exchange=args.token_exchange,
         policy_path=args.policy,
     )
     install_policy_reload(server, args.policy_poll_seconds)

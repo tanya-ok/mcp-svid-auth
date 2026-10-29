@@ -9,6 +9,7 @@ published as a package.
 
 ### Added
 
+- Opt-in RFC 8693 token exchange (`--token-exchange`): on-behalf-of access tokens with an `act` claim, scopes bounded by subject and actor, expiry bounded by the subject token, no chained delegation.
 - In-process tool response poisoning scenario (`make attack-scenarios`) with a design check for RFC 8693 style delegated scope narrowing.
 - Hash-chained audit lines, terminal checkpoints and the `mcp-svid-audit-verify` command.
 - Grant policy reload on SIGHUP or file change; tool calls bounded by the caller token expiry.

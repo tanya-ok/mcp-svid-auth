@@ -176,7 +176,7 @@ Denials record unverified subjects as `unverified:sha256:<digest prefix>`. A che
 
 - Not production software. No HA or distributed rate limits; planned in-process key rotation and local cost budgets only. Plain HTTP inside the demo network.
 - Not a replacement for an MCP gateway such as agentgateway. It shows the token flow a gateway could implement.
-- No user delegation. The agent acts as itself (`client_credentials`). No token exchange or `act` claim chain yet.
+- No human user delegation. Opt-in RFC 8693 token exchange (`--token-exchange`) delegates between workloads with an `act` claim, no chains; not yet exercised in the Kubernetes demo.
 - The authorization server accepts JWT-SVID client assertions only. The shared FHIR transport also uses X.509-SVID mTLS. No WIT-SVID client authentication.
 - The default Kubernetes lab is single-node and synthetic. Podman compatibility commands were retired on 2026-10-13. See [shared lab limits](docs/kubernetes-lab.md#trust-boundary-and-remaining-work).
 - No `jti` replay tracking for access tokens.
