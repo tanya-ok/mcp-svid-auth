@@ -9,6 +9,7 @@ published as a package.
 
 ### Added
 
+- In-process tool response poisoning scenario (`make attack-scenarios`) with a design check for RFC 8693 style delegated scope narrowing.
 - Hash-chained audit lines, terminal checkpoints and the `mcp-svid-audit-verify` command.
 - Grant policy reload on SIGHUP or file change; tool calls bounded by the caller token expiry.
 - Scripted threat model demo scenarios, later run as eighteen asserted scenarios in a shared Kubernetes lab on Lima, k3s and containerd with SPIRE.

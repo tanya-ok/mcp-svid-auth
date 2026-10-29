@@ -1,4 +1,7 @@
-.PHONY: interop package check test lint docs-check up demo down runtime-up runtime-stop lab-render ui ui-stop ui-login ui-login-down identity-demo google-config-init google-config-check google-setup-demo
+attack-scenarios:
+	uv run --locked python -m scripts.attack_scenarios
+
+.PHONY: attack-scenarios interop package check test lint docs-check up demo down runtime-up runtime-stop lab-render ui ui-stop ui-login ui-login-down identity-demo google-config-init google-config-check google-setup-demo
 
 check: lint docs-check test
 

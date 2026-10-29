@@ -125,6 +125,8 @@ this lab, and takes the lab's demo report as its input.
 
 Each scenario asserts its outcome. An unexpected exit, missing evidence or wrong result makes `make demo` fail. It writes a credential-free report to ignored `deploy/.data/demo-report.json`; the expiry probe uses 60-second SVIDs and includes the 30-second validation leeway. See [demo details](docs/demo.md).
 
+The tool response poisoning scenario runs in process without the lab: `make attack-scenarios`. See [tool response poisoning](docs/security.md#tool-response-poisoning).
+
 | # | Caller | Target | Expected |
 |---|---|---|---|
 | 1 | `agent/research` | notes-a | token with `notes:read notes:write`, both tools allowed |
