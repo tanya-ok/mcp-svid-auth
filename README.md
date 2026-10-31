@@ -194,7 +194,7 @@ The dated [publication validation](docs/publication.md) records the checks, arti
 | Optional ZITADEL identity | Pass: 11 real synthetic WebAuthn/OIDC checks, 4 closed Google setup checks and full scoped lifecycle on 2026-10-06. The recovery cycle sampled at most 1858.1 MiB guest use including native startup. Real Google login and physical enrollment remain unverified. See [identity boundaries](docs/passwordless-identity.md) |
 | Historical Podman validation | Retired on 2026-10-13; the 2026-10-05 result remains historical evidence only |
 | Default strict replay mode | Live comparison: first exchange succeeds, second is denied. Normal demo explicitly accepts cached SVID reuse |
-| Independent TypeScript MCP SDK | SDK 1.32.1 with explicit JWT-SVID adapter: discovery, exchange, initialize, scoped listing and read verified; added write denial checked separately |
+| Independent TypeScript MCP SDK | SDK 1.32.2 with explicit JWT-SVID adapter: discovery, exchange, initialize, scoped listing and read verified; added write denial checked separately |
 | Audit completeness | Terminal checkpoint supported; its protection requires separate trusted storage |
 | Publication packages | Local wheel and source archive, license and contents verified; never uploaded |
 

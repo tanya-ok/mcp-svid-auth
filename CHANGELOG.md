@@ -34,6 +34,7 @@ published as a package.
 - Raised PyJWT to 2.15 (spiffe to 0.3.2) for published advisories.
 - A JWKS with malformed keys now denies the token with audit reason `jwks_invalid` instead of an unhandled error.
 - Bumped the TypeScript MCP SDK used by the interop example to 1.32.1 (GHSA-6qxp-vccf-f47h).
+- Raised the interop example to TypeScript MCP SDK 1.32.2 and fast-uri 3.1.9, and opentelemetry-api to 1.45.2.
 - Public task exports no longer include actor identities.
 - Added a path-scoped gitleaks fingerprint for the verified review packet hash.
 

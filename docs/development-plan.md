@@ -7,7 +7,7 @@ The publication milestone makes this project a small, inspectable reference for 
 | Requirement from the 2026-10-04 review | Implemented evidence |
 |---|---|
 | Machine-checked failure demos | All 18 shared Kubernetes scenarios require expected exits and outcomes; safe local verdict report; tests that the checker rejects missing or wrong evidence |
-| Profile compatibility | [Compatibility matrix](compatibility.md), draft deviations stated explicitly, independently exercised TypeScript SDK 1.32.1 with a JWT-SVID adapter |
+| Profile compatibility | [Compatibility matrix](compatibility.md), draft deviations stated explicitly, independently exercised TypeScript SDK 1.32.2 with a JWT-SVID adapter |
 | Cached SVID operation | Live reuse and strict-mode comparison; repeated exchanges through actual SVID expiry, renewed credential and expired-assertion denial |
 | Address-bound URL protection | Numeric connection to policy-checked addresses, original Host and TLS server name, separate origin pools, proxy environment disabled; actual TLS test |
 | Audit completeness boundary | [Terminal checkpoints](audit.md), suffix deletion and chain replacement tests; protected-storage trust assumption stated explicitly |
