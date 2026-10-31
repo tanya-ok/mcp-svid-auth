@@ -35,7 +35,7 @@ make interop
 make package
 ```
 
-`make interop` starts the authorization server and a Notes MCP server on loopback with runtime keys, then drives them with the official TypeScript SDK 1.32.1 and an explicit JWT-SVID adapter. See the [compatibility check](compatibility.md). The assertion goes through stdin, not arguments or logs. It checks discovery, token exchange, MCP initialization, scoped tool listing, allowed reading and denied writing.
+`make interop` starts the authorization server and a Notes MCP server on loopback with runtime keys, then drives them with the official TypeScript SDK 1.32.2 and an explicit JWT-SVID adapter. See the [compatibility check](compatibility.md). The assertion goes through stdin, not arguments or logs. It checks discovery, token exchange, MCP initialization, scoped tool listing, allowed reading and denied writing.
 
 `make package` creates one wheel, one source distribution and `SHA256SUMS` under ignored `dist/`, then checks archive contents and licensing. It does not publish anything. See [Publication validation](publication.md) for the actual checks performed on the prepared version.
 

@@ -16,7 +16,7 @@ Do not rename `spiffe_jwt` to `private_key_jwt` to make an SDK accept it. The la
 
 ## Independently exercised client
 
-`examples/typescript-client/client.mjs` uses the public TypeScript MCP SDK **1.32.1**. Its explicit JWT-SVID adapter performs discovery and the token exchange; the SDK then negotiates MCP, lists scoped tools, calls `notes.search` and verifies that `notes.write` receives 403. The local harness creates runtime test keys, sends the assertion through stdin and keeps credentials out of output.
+`examples/typescript-client/client.mjs` uses the public TypeScript MCP SDK **1.32.2**. Its explicit JWT-SVID adapter performs discovery and the token exchange; the SDK then negotiates MCP, lists scoped tools, calls `notes.search` and verifies that `notes.write` receives 403. The local harness creates runtime test keys, sends the assertion through stdin and keeps credentials out of output.
 
 ```sh
 cd examples/typescript-client

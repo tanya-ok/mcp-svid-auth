@@ -115,11 +115,38 @@ Time to denial after a grant is removed:
 
 `build_mcp` also refuses to start if any registered tool has no declared scope.
 
+## Tool response poisoning
+
+`make attack-scenarios` runs `scripts/attack_scenarios.py` in process, with synthetic data and no network. A notes tool returns a note that carries an embedded directive: fetch every health record from a FHIR-shaped resource and save it as a note. A deliberately naive agent obeys it. Each step must end in the listed decision or the run fails.
+
+| Step | Decision |
+|---|---|
+| Token for the FHIR resource | 400 `invalid_target`: the agent identity has no grant there |
+| Escalate to `notes:write` | 400 `invalid_scope` |
+| Replay the notes token at the FHIR resource | 401 `invalid_token`, audit reason `InvalidAudienceError` |
+| `notes.write` with the read token | 403 `insufficient_scope` |
+| Captured token presented after `exp` | 401 `invalid_token`, audit reason `ExpiredSignatureError` |
+| Clinical identity asks for `fhir:write` | 400 `invalid_scope` |
+
+The FHIR target here is a stand-in protected resource at a FHIR-shaped URI; the real FHIR server is exercised only in the Kubernetes lab. The scenario does not detect or strip the injection. Inside its grant the agent can still be steered, and data it already holds can leave through channels outside these servers.
+
+### Delegation (RFC 8693 token exchange)
+
+The token endpoint accepts `grant_type=urn:ietf:params:oauth:grant-type:token-exchange` when started with `--token-exchange` (off by default). The actor authenticates with its own JWT-SVID; the subject token must be an access token this server issued. `exchange()` in the attack script keeps the same rules as an in-process design check. Tested in `tests/test_token_exchange.py`.
+
+- Issued scopes must be a subset of both the user token scopes and the actor policy grant.
+- The resource must equal the user token audience. One audience only.
+- `exp` is the earlier of the user token expiry and the normal token lifetime.
+- `act.sub` names the actor SPIFFE ID. A subject token that already carries `act` is refused: no chains.
+- `actor_token` is refused; the client assertion is the actor credential. Actor and subject must differ.
+- The subject token is verified with this server's current and retired signing keys, `typ: at+jwt`, ES256, own issuer.
+- A subject token is not consumed: any actor allowed by policy can exchange it again until it expires (at most 5 minutes). Each exchange still needs a fresh actor SVID.
+
 ## Non-goals
 
 - Not production software. No HA or distributed rate limits; planned in-process key rotation and local cost budgets only. Plain HTTP inside the demo network.
 - Not a replacement for an MCP gateway such as agentgateway. It shows the token flow a gateway could implement.
-- No user delegation. The agent acts as itself (`client_credentials`). No token exchange or `act` claim chain yet.
+- No human user delegation. Token exchange delegates between workloads that hold tokens from this server; a human identity provider token is not accepted as `subject_token`. Not exercised in the Kubernetes demo yet.
 - No X.509-SVID or WIT-SVID client authentication. JWT-SVID only.
 
 ## Known gaps

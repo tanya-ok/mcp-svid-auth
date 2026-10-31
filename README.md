@@ -125,6 +125,8 @@ this lab, and takes the lab's demo report as its input.
 
 Each scenario asserts its outcome. An unexpected exit, missing evidence or wrong result makes `make demo` fail. It writes a credential-free report to ignored `deploy/.data/demo-report.json`; the expiry probe uses 60-second SVIDs and includes the 30-second validation leeway. See [demo details](docs/demo.md).
 
+The tool response poisoning scenario runs in process without the lab: `make attack-scenarios`. See [tool response poisoning](docs/security.md#tool-response-poisoning).
+
 | # | Caller | Target | Expected |
 |---|---|---|---|
 | 1 | `agent/research` | notes-a | token with `notes:read notes:write`, both tools allowed |
@@ -174,7 +176,7 @@ Denials record unverified subjects as `unverified:sha256:<digest prefix>`. A che
 
 - Not production software. No HA or distributed rate limits; planned in-process key rotation and local cost budgets only. Plain HTTP inside the demo network.
 - Not a replacement for an MCP gateway such as agentgateway. It shows the token flow a gateway could implement.
-- No user delegation. The agent acts as itself (`client_credentials`). No token exchange or `act` claim chain yet.
+- No human user delegation. Opt-in RFC 8693 token exchange (`--token-exchange`) delegates between workloads with an `act` claim, no chains; not yet exercised in the Kubernetes demo.
 - The authorization server accepts JWT-SVID client assertions only. The shared FHIR transport also uses X.509-SVID mTLS. No WIT-SVID client authentication.
 - The default Kubernetes lab is single-node and synthetic. Podman compatibility commands were retired on 2026-10-13. See [shared lab limits](docs/kubernetes-lab.md#trust-boundary-and-remaining-work).
 - No `jti` replay tracking for access tokens.
@@ -192,7 +194,7 @@ The dated [publication validation](docs/publication.md) records the checks, arti
 | Optional ZITADEL identity | Pass: 11 real synthetic WebAuthn/OIDC checks, 4 closed Google setup checks and full scoped lifecycle on 2026-10-06. The recovery cycle sampled at most 1858.1 MiB guest use including native startup. Real Google login and physical enrollment remain unverified. See [identity boundaries](docs/passwordless-identity.md) |
 | Historical Podman validation | Retired on 2026-10-13; the 2026-10-05 result remains historical evidence only |
 | Default strict replay mode | Live comparison: first exchange succeeds, second is denied. Normal demo explicitly accepts cached SVID reuse |
-| Independent TypeScript MCP SDK | SDK 1.32.1 with explicit JWT-SVID adapter: discovery, exchange, initialize, scoped listing and read verified; added write denial checked separately |
+| Independent TypeScript MCP SDK | SDK 1.32.2 with explicit JWT-SVID adapter: discovery, exchange, initialize, scoped listing and read verified; added write denial checked separately |
 | Audit completeness | Terminal checkpoint supported; its protection requires separate trusted storage |
 | Publication packages | Local wheel and source archive, license and contents verified; never uploaded |
 

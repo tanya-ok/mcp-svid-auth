@@ -9,6 +9,8 @@ published as a package.
 
 ### Added
 
+- Opt-in RFC 8693 token exchange (`--token-exchange`): on-behalf-of access tokens with an `act` claim, scopes bounded by subject and actor, expiry bounded by the subject token, no chained delegation.
+- In-process tool response poisoning scenario (`make attack-scenarios`) with a design check for RFC 8693 style delegated scope narrowing.
 - Hash-chained audit lines, terminal checkpoints and the `mcp-svid-audit-verify` command.
 - Grant policy reload on SIGHUP or file change; tool calls bounded by the caller token expiry.
 - Scripted threat model demo scenarios, later run as eighteen asserted scenarios in a shared Kubernetes lab on Lima, k3s and containerd with SPIRE.
@@ -32,6 +34,7 @@ published as a package.
 - Raised PyJWT to 2.15 (spiffe to 0.3.2) for published advisories.
 - A JWKS with malformed keys now denies the token with audit reason `jwks_invalid` instead of an unhandled error.
 - Bumped the TypeScript MCP SDK used by the interop example to 1.32.1 (GHSA-6qxp-vccf-f47h).
+- Raised the interop example to TypeScript MCP SDK 1.32.2 and fast-uri 3.1.9, and opentelemetry-api to 1.45.2.
 - Public task exports no longer include actor identities.
 - Added a path-scoped gitleaks fingerprint for the verified review packet hash.
 

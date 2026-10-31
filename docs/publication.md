@@ -12,7 +12,7 @@ no production-readiness claim.
 - The lab runs on k3s Kubernetes with containerd in a dedicated Lima VM. The
   Podman runtime path, its compose services and `test_podman_backend.py` were
   retired on 2026-10-13.
-- `make interop` passes with TypeScript MCP SDK 1.32.1 on Node 26.
+- `make interop` passes with TypeScript MCP SDK 1.32.2 on Node 26.
 - The full lab needs `mcp-spiffe-bridge`, which is not yet published. The
   single-repository [quickstart](quickstart.md) path does not.
 

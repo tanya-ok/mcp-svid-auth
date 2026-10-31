@@ -101,7 +101,7 @@ async def check() -> None:
             }:
                 raise RuntimeError("independent client failed")
             print(
-                "PASS: TypeScript SDK 1.32.1 discovery, JWT-SVID adapter, "
+                "PASS: TypeScript SDK 1.32.2 discovery, JWT-SVID adapter, "
                 "MCP initialize, listTools, allowed read, denied write"
             )
         finally:
