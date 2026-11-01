@@ -39,6 +39,19 @@ The authorization server's Workload API bundle lookup is a local-demo alternativ
 
 Keep these separate from publication of the reference demo. Existing public backlog entries already cover the SPIRE cache report, delegation and Kubernetes variant. No upstream issue, release or deployment is authorized by this milestone.
 
+## Roadmap after the 2026-11-01 review
+
+Ranked by security value per effort after a cross-model review. Every denial test needs a matching allowed case. Delegation chains stay deferred.
+
+| Order | Work | Acceptance criterion |
+|---|---|---|
+| 1 | DPoP sender-constrained access tokens ([RFC 9449](https://www.rfc-editor.org/rfc/rfc9449.html)), opt-in flag first | Token endpoint binds `cnf.jkt` to the agent's proof key; MCP servers verify the proof signature, `htm`, `htu`, `iat` window, `ath` and `jti` replay; a DPoP-bound token sent as plain Bearer is rejected; a replayed proof is rejected; a valid proof succeeds. Where the agent's proof key is held is documented |
+| 2 | Revocation by token `jti` and by SPIFFE ID | A revoked `jti` and a blocked SPIFFE ID are refused on the next call, with a stated, tested propagation bound. Blocking also stops new issuance and token exchange. If revocation state cannot be read, validation fails closed. [RFC 7009](https://www.rfc-editor.org/rfc/rfc7009.html) endpoint optional; offline JWT validation alone is not claimed as immediate |
+| 3 | Key and trust lifecycle tests | Signing key rotation, SPIRE bundle and JWKS refresh, a stale key after rotation, and clock skew at the edges each have an asserted scenario |
+| Deferred | Two-hop delegation with per-hop attenuation and a chain-splicing test | Only with a concrete two-hop workflow. Until then the current refusal of chains and `actor_token` stays |
+
+Residual risk stays explicit: a compromised agent can still misuse its own grant. DPoP and revocation narrow token theft and response time; they do not detect intent.
+
 ## Task tracking checkpoint
 
 The [2026-10-07 portfolio checkpoint](portfolio-checkpoint-2026-10-07.md) reconciles this plan with local beads tasks. Use `bd --sandbox ready` before starting work and update task status and validation evidence as work progresses. Public task snapshots are in `.beads/issues.jsonl`; local databases stay untracked. Remote synchronization is disabled.
