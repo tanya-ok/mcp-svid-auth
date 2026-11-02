@@ -34,6 +34,7 @@ from starlette.routing import Route
 
 from mcp_svid_auth.audit import AuditLog
 from mcp_svid_auth.budgets import WindowBudget
+from mcp_svid_auth.dpop import DPOP_ALG, DPoPError, ProofReplayStore, VerifiedProof, verify_proof
 from mcp_svid_auth.errors import AuthError
 from mcp_svid_auth.policy import Policy
 from mcp_svid_auth.spiffe_keys import (
@@ -159,6 +160,8 @@ class AuthzServer:
     _retired_keys: list[tuple[dict[str, Any], float]] = field(default_factory=list)
     _signing_lock: threading.RLock = field(default_factory=threading.RLock)
     token_exchange: bool = False
+    dpop_required: bool = False
+    proof_replay: ProofReplayStore = field(default_factory=ProofReplayStore)
     policy_path: Path | None = None
     _policy_digest: str | None = None
     _reload_lock: threading.Lock = field(default_factory=threading.Lock)
@@ -253,7 +256,9 @@ class AuthzServer:
             return {"keys": keys}
 
     def metadata(self) -> dict[str, Any]:
+        dpop = {"dpop_signing_alg_values_supported": [DPOP_ALG]} if self.dpop_required else {}
         return {
+            **dpop,
             "issuer": self.issuer,
             "token_endpoint": f"{self.issuer}/token",
             "jwks_uri": f"{self.issuer}/jwks.json",
@@ -374,6 +379,9 @@ class AuthzServer:
             ) from exc
         if "act" in claims:
             raise AuthError("invalid_request", "chained delegation is not supported")
+        if "cnf" in claims:
+            # No holder proof for the subject yet; exchanging must not unbind the token.
+            raise AuthError("invalid_request", "sender-constrained subject token is not supported")
         if not isinstance(claims["aud"], str) or not isinstance(claims["scope"], str):
             raise AuthError("invalid_grant", "subject token invalid")
         return claims
@@ -403,7 +411,15 @@ class AuthzServer:
             raise AuthError("invalid_scope", "requested scope exceeds the delegation")
         return subject, scopes, min(expiry, int(delegated["exp"]))
 
-    def issue(self, form: dict[str, str]) -> dict[str, Any]:
+    def _verify_token_proof(self, proofs: list[str] | None) -> VerifiedProof:
+        if not proofs or len(proofs) != 1:
+            raise AuthError("invalid_dpop_proof", "exactly one DPoP proof is required")
+        try:
+            return verify_proof(proofs[0], htm="POST", htu=f"{self.issuer}/token", now=time.time())
+        except DPoPError as exc:
+            raise AuthError("invalid_dpop_proof", "DPoP proof refused", 400, str(exc)) from exc
+
+    def issue(self, form: dict[str, str], dpop_proofs: list[str] | None = None) -> dict[str, Any]:
         grant_type = form.get("grant_type")
         exchange = grant_type == TOKEN_EXCHANGE_GRANT and self.token_exchange
         if grant_type != "client_credentials" and not exchange:
@@ -422,6 +438,7 @@ class AuthzServer:
         client_id = form.get("client_id")
         if client_id is not None and client_id != spiffe_id:
             raise AuthError("invalid_client", "client_id does not match SVID", 401)
+        proof = self._verify_token_proof(dpop_proofs) if self.dpop_required else None
         now = int(time.time())
         subject = spiffe_id
         expiry = now + self.token_ttl
@@ -434,6 +451,12 @@ class AuthzServer:
         if not self.subject_budget.take(spiffe_id):
             raise AuthError("temporarily_unavailable", "subject request budget exceeded", 429)
         self._check_jti(spiffe_id, verified, record=True)
+        if proof is not None:
+            try:
+                self.proof_replay.add(proof, time.time())
+            except DPoPError as exc:
+                raise AuthError("invalid_dpop_proof", "DPoP proof refused", 400, str(exc)) from exc
+            extra = {**extra, "cnf": {"jkt": proof.jkt}}
         claims = {
             "iss": self.issuer,
             "sub": subject,
@@ -458,7 +481,7 @@ class AuthzServer:
             )
         body: dict[str, Any] = {
             "access_token": token,
-            "token_type": "Bearer",
+            "token_type": "DPoP" if proof is not None else "Bearer",
             "expires_in": expiry - now,
             "scope": claims["scope"],
         }
@@ -491,7 +514,7 @@ class AuthzServer:
             if len(form) != len(items):
                 # RFC 6749 section 3.2: request parameters MUST NOT be included more than once.
                 raise AuthError("invalid_request", "repeated request parameter")
-            body = self.issue(form)
+            body = self.issue(form, request.headers.getlist("dpop"))
         except AuthError as exc:
             detail = f" ({exc.detail})" if exc.detail else ""
             self._audit(form, "deny", f"{exc.code}: {exc.description}{detail}")
@@ -668,6 +691,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="enable RFC 8693 on-behalf-of exchange for tokens this server issued; off by default",
     )
+    parser.add_argument(
+        "--dpop-required",
+        action="store_true",
+        help="require an RFC 9449 proof on every token request and issue sender-constrained tokens",
+    )
     parser.add_argument("--host", default="127.0.0.1", help="listen address")
     parser.add_argument("--port", type=int, default=8100, help="listen port")
     parser.add_argument(
@@ -752,6 +780,7 @@ def main(argv: list[str] | None = None) -> None:
         subject_budget=WindowBudget(args.subject_requests_per_second),
         signing_rotation_seconds=args.signing_rotation_seconds,
         token_exchange=args.token_exchange,
+        dpop_required=args.dpop_required,
         policy_path=args.policy,
     )
     install_policy_reload(server, args.policy_poll_seconds)

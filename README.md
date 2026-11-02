@@ -30,6 +30,7 @@ MCP client configs often hold long-lived static keys:
 | Decisions are hash-chained; a separately trusted terminal checkpoint detects suffix deletion and chain replacement. Without a checkpoint, `mcp-svid-audit-verify` detects edits but not deletion of lines from the end | `audit.py` |
 | The MCP server never forwards the incoming token. With an upstream it uses its own token | `Upstream` in `mcp_server.py`, `test_no_passthrough.py` |
 | A stdio MCP server can start with a refreshed short-lived token instead of a static key | `stdio_wrapper.py` |
+| Opt-in DPoP binds a token to the agent's key, so a stolen token alone is refused. HTTPS integration is not verified yet | `dpop.py`, `tests/test_dpop.py`, [security notes](docs/security.md#sender-constrained-tokens-dpop) |
 
 Targets the [MCP authorization spec, revision 2026-07-28](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization) (checked 2026-10-04): Protected Resource Metadata (RFC 9728), resource indicators (RFC 8707), audience validation, no token passthrough.
 

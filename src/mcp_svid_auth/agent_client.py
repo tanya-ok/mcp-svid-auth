@@ -30,6 +30,7 @@ from mcp.client import Client
 from mcp.client.streamable_http import streamable_http_client
 
 from mcp_svid_auth.authz import CLIENT_ASSERTION_TYPE
+from mcp_svid_auth.dpop import DPoPAuth, DPoPKey
 from mcp_svid_auth.pinned_transport import PinnedTransport
 from mcp_svid_auth.spiffe_keys import SvidSource, WorkloadApiSvidSource
 
@@ -264,6 +265,7 @@ async def fetch_access_token(  # noqa: PLR0913
     spiffe_id: str | None = None,
     http: HttpFactory = default_http,
     url_policy: UrlPolicy = STRICT_URLS,
+    dpop: DPoPKey | None = None,
 ) -> dict[str, Any]:
     found = await discover(resource, trusted_issuers, http, url_policy)
     form = {
@@ -276,7 +278,8 @@ async def fetch_access_token(  # noqa: PLR0913
     if spiffe_id:
         form["client_id"] = spiffe_id
     async with _http_for_policy(http, url_policy) as client:
-        response = await client.post(found.token_endpoint, data=form)
+        headers = {"DPoP": dpop.proof("POST", found.token_endpoint)} if dpop else None
+        response = await client.post(found.token_endpoint, data=form, headers=headers)
     body: dict[str, Any] = response.json()
     if response.status_code != 200:
         allowed_errors = {
@@ -287,12 +290,18 @@ async def fetch_access_token(  # noqa: PLR0913
             "invalid_request",
             "unsupported_grant_type",
             "temporarily_unavailable",
+            "invalid_dpop_proof",
         }
         code = body.get("error")
         safe_code = (
             code if isinstance(code, str) and code in allowed_errors else "token_request_failed"
         )
         raise TokenRequestError(f"{response.status_code} {safe_code}")
+    bound = str(body.get("token_type", "")).lower() == "dpop"
+    if dpop is not None and not bound:
+        raise TokenRequestError("DPoP was required but the token is not sender-constrained")
+    if dpop is None and bound:
+        raise TokenRequestError("sender-constrained token needs a DPoP key this client lacks")
     return body
 
 
@@ -304,6 +313,7 @@ async def call_tool(  # noqa: PLR0913
     *,
     http: HttpFactory = default_http,
     url_policy: UrlPolicy = STRICT_URLS,
+    dpop: DPoPKey | None = None,
 ) -> str:
     """Call one tool. Returns the text result, or 'HTTP <status>: <challenge>' on auth failure."""
     await url_policy.check(resource)
@@ -319,12 +329,17 @@ async def call_tool(  # noqa: PLR0913
             scope = re.search(r'scope="([^"]*)"', raw)
             if scope and set(scope[1].split()) <= {"notes:read", "notes:write"}:
                 fields.append(f'scope="{scope[1]}"')
-            challenge = "Bearer " + ", ".join(fields)
+            challenge = ("DPoP " if dpop else "Bearer ") + ", ".join(fields)
             auth_failures.append(f"HTTP {response.status_code}: {challenge}")
 
-    headers = {"Authorization": f"Bearer {token}"}
+    # Never a static DPoP header: every request needs its own proof.
+    credentials: dict[str, Any] = (
+        {"auth": DPoPAuth(token, dpop)}
+        if dpop
+        else {"headers": {"Authorization": f"Bearer {token}"}}
+    )
     async with _http_for_policy(
-        http, url_policy, headers=headers, event_hooks={"response": [record]}
+        http, url_policy, event_hooks={"response": [record]}, **credentials
     ) as client:
         try:
             async with Client(streamable_http_client(resource, http_client=client)) as mcp:
@@ -341,6 +356,7 @@ async def call_tool(  # noqa: PLR0913
 async def run(args: argparse.Namespace) -> int:
     source: SvidSource = WorkloadApiSvidSource(socket_path=args.socket)
     urls = url_policy_from_args(args)
+    dpop = DPoPKey() if args.dpop else None
     token = await fetch_access_token(
         args.resource,
         source,
@@ -348,6 +364,7 @@ async def run(args: argparse.Namespace) -> int:
         scope=args.scope,
         trusted_issuers=args.trusted_issuer,
         url_policy=urls,
+        dpop=dpop,
     )
     print(
         json.dumps(
@@ -363,7 +380,9 @@ async def run(args: argparse.Namespace) -> int:
     if args.steal_token:
         print(json.dumps({"event": "replay", "issued_for": args.resource, "sent_to": target}))
     for tool, arguments in args.call or DEFAULT_CALLS:
-        outcome = await call_tool(target, token["access_token"], tool, arguments, url_policy=urls)
+        outcome = await call_tool(
+            target, token["access_token"], tool, arguments, url_policy=urls, dpop=dpop
+        )
         print(json.dumps({"event": "call", "server": target, "tool": tool, "result": outcome}))
     return 0
 
@@ -455,6 +474,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     add_url_flags(parser)
     parser.add_argument("--spiffe-id", help="sent as client_id")
+    parser.add_argument(
+        "--dpop",
+        action="store_true",
+        help="use RFC 9449 sender-constrained tokens with a key held in process memory",
+    )
     parser.add_argument("--socket", help="Workload API socket, default SPIFFE_ENDPOINT_SOCKET")
     parser.add_argument(
         "--call",
