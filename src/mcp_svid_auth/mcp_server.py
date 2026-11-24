@@ -46,9 +46,10 @@ from mcp.server.transport_security import TransportSecuritySettings
 from mcp.types import ListToolsResult, PaginatedRequestParams
 from pydantic import AnyHttpUrl
 from starlette.applications import Starlette
+from starlette.authentication import AuthCredentials, AuthenticationBackend
 from starlette.middleware import Middleware
 from starlette.middleware.authentication import AuthenticationMiddleware
-from starlette.requests import Request
+from starlette.requests import HTTPConnection, Request
 from starlette.responses import JSONResponse, Response
 from starlette.routing import Route
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
@@ -67,6 +68,7 @@ from mcp_svid_auth.agent_client import (
 )
 from mcp_svid_auth.audit import AuditLog
 from mcp_svid_auth.budgets import WindowBudget
+from mcp_svid_auth.dpop import DPOP_ALG, DPoPError, ProofReplayStore, verify_proof
 from mcp_svid_auth.spiffe_keys import SvidSource, WorkloadApiSvidSource
 
 JWKS_CACHE_SECONDS = 60
@@ -178,6 +180,12 @@ class AudienceBoundVerifier:
     )
 
     async def verify_token(self, token: str) -> AccessToken | None:
+        return await self._verify(token, bound=False)
+
+    async def verify_bound_token(self, token: str) -> AccessToken | None:
+        return await self._verify(token, bound=True)
+
+    async def _verify(self, token: str, *, bound: bool) -> AccessToken | None:
         if not self.budget.take():
             self.audit.write(
                 spiffe_id=None, tool=None, decision="deny", reason="verification_budget_exceeded"
@@ -212,6 +220,7 @@ class AudienceBoundVerifier:
             )
             if claims["aud"] not in (self.resource, [self.resource]):
                 raise jwt.InvalidAudienceError("audience must name this resource only")
+            jkt = _check_binding(claims, bound=bound)
         except jwt.PyJWTError as exc:
             self.audit.write(
                 spiffe_id=_unverified_sub(token),
@@ -243,8 +252,78 @@ class AudienceBoundVerifier:
             expires_at=int(claims["exp"]),
             resource=self.resource,
             subject=str(claims["sub"]),
-            claims={"iss": claims["iss"]},
+            claims={"iss": claims["iss"], **({"cnf_jkt": jkt} if bound else {})},
         )
+
+
+class DPoPAuthBackend(AuthenticationBackend):
+    """RFC 9449 resource-side check: a bound token plus a fresh proof from its key.
+
+    The proof target comes from the configured resource, never from request or forwarding
+    headers, so a client cannot choose which URI its proof is compared with.
+    """
+
+    def __init__(
+        self,
+        verifier: AudienceBoundVerifier,
+        resource: str,
+        audit: AuditLog,
+        replay: ProofReplayStore | None = None,
+        clock: Callable[[], float] = time.time,
+    ) -> None:
+        self.verifier = verifier
+        self.resource = resource
+        self.audit = audit
+        self.replay = replay or ProofReplayStore()
+        self.clock = clock
+
+    def _deny(self, reason: str) -> None:
+        self.audit.write(spiffe_id=None, tool=None, decision="deny", reason=reason)
+
+    async def authenticate(
+        self, conn: HTTPConnection
+    ) -> tuple[AuthCredentials, AuthenticatedUser] | None:
+        authorization = conn.headers.getlist("authorization")
+        if not authorization:
+            return None
+        scheme, _, token = authorization[0].partition(" ")
+        if len(authorization) != 1 or scheme.lower() != "dpop" or not token:
+            self._deny("dpop_scheme_required")
+            return None
+        proofs = conn.headers.getlist("dpop")
+        if len(proofs) != 1:
+            self._deny("invalid_dpop_proof: exactly one proof required")
+            return None
+        access = await self.verifier.verify_bound_token(token)
+        if access is None:
+            return None
+        now = self.clock()
+        try:
+            proof = verify_proof(
+                proofs[0],
+                htm=conn.scope.get("method", ""),
+                htu=self.resource,
+                now=now,
+                access_token=token,
+            )
+            if proof.jkt != (access.claims or {}).get("cnf_jkt"):
+                raise DPoPError("jkt_mismatch")
+            self.replay.add(proof, now)
+        except DPoPError as exc:
+            self._deny(f"invalid_dpop_proof: {exc}")
+            return None
+        return AuthCredentials(access.scopes), AuthenticatedUser(access)
+
+
+def _check_binding(claims: dict[str, Any], *, bound: bool) -> str | None:
+    """Return the bound key thumbprint; refuse a token used outside its binding."""
+    cnf = claims.get("cnf")
+    jkt = cnf.get("jkt") if isinstance(cnf, dict) else None
+    if bound and not isinstance(jkt, str):
+        raise jwt.InvalidTokenError("token is not sender-constrained")
+    if not bound and cnf is not None:
+        raise jwt.InvalidTokenError("sender-constrained token sent as Bearer")
+    return jkt
 
 
 def _find_key(jwks: dict[str, Any], kid: object) -> Any:
@@ -271,15 +350,18 @@ def _unverified_sub(token: str) -> str | None:
 class ToolScopeGuard:
     """Checks the scope for a tools/call before the MCP layer sees it. Deny by default."""
 
-    def __init__(
+    def __init__(  # noqa: PLR0913
         self,
         app: ASGIApp,
         tool_scopes: dict[str, str],
         resource_metadata_url: str,
         audit: AuditLog,
         clock: Callable[[], float] = time.time,
+        *,
+        scheme: str = "Bearer",
     ) -> None:
         self.app = app
+        self.scheme = scheme
         self.tool_scopes = tool_scopes
         self.resource_metadata_url = resource_metadata_url
         self.audit = audit
@@ -321,7 +403,7 @@ class ToolScopeGuard:
                     decision="deny",
                     reason=f"insufficient_scope: needs {required}",
                 )
-                await _forbidden(send, required, self.resource_metadata_url)
+                await _forbidden(send, required, self.resource_metadata_url, self.scheme)
                 return
             self.audit.write(
                 spiffe_id=spiffe_id, tool=call, decision="allow", reason=f"scope {required}"
@@ -382,14 +464,25 @@ class AuditedRequireAuth:
     Invalid tokens are audited by the verifier, so only the missing-token case is logged here.
     """
 
-    def __init__(self, app: ASGIApp, resource_metadata_url: str, audit: AuditLog) -> None:
+    def __init__(
+        self, app: ASGIApp, resource_metadata_url: str, audit: AuditLog, *, dpop: bool = False
+    ) -> None:
         self.inner = RequireAuthMiddleware(app, [], AnyHttpUrl(resource_metadata_url))
         self.audit = audit
+        self.dpop = dpop
+        self.resource_metadata_url = resource_metadata_url
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if not isinstance(scope.get("user"), AuthenticatedUser):
             headers = dict(scope.get("headers", []))
             auth = headers.get(b"authorization", b"")
+            if self.dpop:
+                if not auth:
+                    self.audit.write(
+                        spiffe_id=None, tool=None, decision="deny", reason="missing_token"
+                    )
+                await _dpop_challenge(send, self.resource_metadata_url)
+                return
             if not auth.lower().startswith(b"bearer "):
                 self.audit.write(spiffe_id=None, tool=None, decision="deny", reason="missing_token")
         await self.inner(scope, receive, send)
@@ -461,12 +554,36 @@ async def _error(send: Send, status: int, error: str, description: str) -> None:
     await send({"type": "http.response.body", "body": body})
 
 
-async def _forbidden(send: Send, required: str, resource_metadata_url: str) -> None:
+async def _dpop_challenge(send: Send, resource_metadata_url: str) -> None:
+    body = json.dumps(
+        {"error": "invalid_token", "error_description": "valid DPoP token and proof required"}
+    ).encode()
+    challenge = (
+        f'DPoP error="invalid_token", algs="{DPOP_ALG}", '
+        f'resource_metadata="{resource_metadata_url}"'
+    )
+    await send(
+        {
+            "type": "http.response.start",
+            "status": 401,
+            "headers": [
+                (b"content-type", b"application/json"),
+                (b"content-length", str(len(body)).encode()),
+                (b"www-authenticate", challenge.encode()),
+            ],
+        }
+    )
+    await send({"type": "http.response.body", "body": body})
+
+
+async def _forbidden(
+    send: Send, required: str, resource_metadata_url: str, scheme: str = "Bearer"
+) -> None:
     body = json.dumps(
         {"error": "insufficient_scope", "error_description": f"Required scope: {required}"}
     ).encode()
     challenge = (
-        f'Bearer error="insufficient_scope", scope="{required}", '
+        f'{scheme} error="insufficient_scope", scope="{required}", '
         f'resource_metadata="{resource_metadata_url}"'
     )
     await send(
@@ -620,6 +737,7 @@ def create_app(  # noqa: PLR0913
     store: NotesStore | None = None,
     allowed_hosts: list[str] | None = None,
     upstream: Upstream | None = None,
+    dpop_required: bool = False,
 ) -> Starlette:
     resource = resource.rstrip("/")
     mcp, tool_scopes = build_mcp(name, store or NotesStore(), upstream)
@@ -637,8 +755,19 @@ def create_app(  # noqa: PLR0913
     metadata_url = str(build_resource_metadata_url(resource_url))
     source = StaticJwks(jwks) if callable(jwks) else jwks
     verifier = AudienceBoundVerifier(issuer=issuer, resource=resource, jwks=source, audit=audit)
-    guarded = ToolScopeGuard(StreamableHTTPASGIApp(manager), tool_scopes, metadata_url, audit)
-    endpoint = AuditedRequireAuth(guarded, metadata_url, audit)
+    guarded = ToolScopeGuard(
+        StreamableHTTPASGIApp(manager),
+        tool_scopes,
+        metadata_url,
+        audit,
+        scheme="DPoP" if dpop_required else "Bearer",
+    )
+    endpoint = AuditedRequireAuth(guarded, metadata_url, audit, dpop=dpop_required)
+    backend: AuthenticationBackend = (
+        DPoPAuthBackend(verifier, resource, audit)
+        if dpop_required
+        else BearerAuthBackend(verifier, resource_server_url=resource_url)
+    )
     path = urlsplit(resource).path or "/"
 
     @contextlib.asynccontextmanager
@@ -652,6 +781,14 @@ def create_app(  # noqa: PLR0913
         "authorization_servers": [issuer],
         "scopes_supported": sorted(set(tool_scopes.values())),
         "bearer_methods_supported": ["header"],
+        **(
+            {
+                "dpop_signing_alg_values_supported": [DPOP_ALG],
+                "dpop_bound_access_tokens_required": True,
+            }
+            if dpop_required
+            else {}
+        ),
     }
 
     async def protected_resource_metadata(_: Request) -> Response:
@@ -665,10 +802,7 @@ def create_app(  # noqa: PLR0913
     return Starlette(
         routes=routes,
         middleware=[
-            Middleware(
-                AuthenticationMiddleware,
-                backend=BearerAuthBackend(verifier, resource_server_url=resource_url),
-            ),
+            Middleware(AuthenticationMiddleware, backend=backend),
             Middleware(AuthContextMiddleware),
         ],
         lifespan=lifespan,
@@ -693,6 +827,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--port", type=int, default=8101, help="listen port")
     parser.add_argument(
         "--audit-log", type=Path, help="audit log file (JSON lines, appended), default stderr"
+    )
+    parser.add_argument(
+        "--dpop-required",
+        action="store_true",
+        help="accept only RFC 9449 sender-constrained tokens with a fresh proof on every request",
     )
     parser.add_argument(
         "--upstream-resource",
@@ -740,6 +879,7 @@ def main(argv: list[str] | None = None) -> None:
         jwks=JwksFetcher(args.jwks_uri or f"{issuer}/jwks.json"),
         audit=AuditLog(path=args.audit_log, component=f"mcp_server:{args.name}"),
         upstream=upstream,
+        dpop_required=args.dpop_required,
     )
     uvicorn.run(app, host=args.host, port=args.port)
 

@@ -17,6 +17,7 @@ JWT-SVID to access token bridge (POC)
 | `--policy` | required | Path to the policy YAML file; reloaded on SIGHUP and when its content changes |
 | `--policy-poll-seconds` | `5.0` | How often to check the policy file for changes; 0 disables polling (SIGHUP only) |
 | `--token-exchange` | off | Enable RFC 8693 on-behalf-of exchange for tokens this server issued; off by default |
+| `--dpop-required` | off | Require an RFC 9449 proof on every token request and issue sender-constrained tokens |
 | `--host` | `127.0.0.1` | Listen address |
 | `--port` | `8100` | Listen port |
 | `--static-jwks` | none | Test mode: JWT-SVID bundle as a JWKS file instead of the Workload API |
@@ -55,6 +56,7 @@ Notes MCP server (POC)
 | `--host` | `127.0.0.1` | Listen address |
 | `--port` | `8101` | Listen port |
 | `--audit-log` | none | Audit log file (JSON lines, appended), default stderr |
+| `--dpop-required` | off | Accept only RFC 9449 sender-constrained tokens with a fresh proof on every request |
 | `--upstream-resource` | none | Upstream MCP server for notes.search_upstream, called with this server's own token |
 | `--upstream-scope` | `notes:read` | Scope requested for the upstream token |
 | `--trusted-issuer` | none | Authorization server allowed for the upstream token; required with an upstream |
@@ -89,6 +91,7 @@ Agent that authenticates with its JWT-SVID
 | `--allow-http` | off | Dev only: accept plain http URLs for discovery, token requests and tool calls |
 | `--allow-private-network` | off | Dev only: accept hosts that resolve to private, loopback or link-local addresses |
 | `--spiffe-id` | none | Sent as client_id |
+| `--dpop` | off | Use RFC 9449 sender-constrained tokens with a key held in process memory |
 | `--socket` | none | Workload API socket, default SPIFFE_ENDPOINT_SOCKET |
 | `--call` | none | Tool to call with JSON arguments; repeatable; default notes.search then notes.write |
 | `--steal-token` | none | Demo: send the token issued for --resource to OTHER_RESOURCE instead |

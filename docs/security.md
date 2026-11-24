@@ -184,3 +184,29 @@ The JWT-SVID exchange is a supported subset of draft -02. The local Workload API
 verification and JWKS response limits; negative fetch caching; per-subject replay
 quotas; and public-key prepublication/retirement. These are per-process prototype
 bounds, not an external denial-of-service protection or restart-safe key store.
+
+## Sender-constrained tokens (DPoP)
+
+`--dpop-required` on the token endpoint and the MCP server, with `--dpop` on the agent, turns on [RFC 9449](https://www.rfc-editor.org/rfc/rfc9449.html). It is off by default and Bearer behaviour is unchanged. The token carries `cnf.jkt`, and every HTTP request needs a new proof signed by that key. A stolen token alone is refused. JWT-SVID authentication and tool scopes still apply: DPoP binds the token, it does not replace them.
+
+| Rule | Behaviour |
+|---|---|
+| Proof | ES256, `typ` `dpop+jwt`, an embedded public P-256 key. Private members and remote key references are refused |
+| Freshness | `iat` at most 60 seconds old and 5 seconds ahead. Server nonces are not implemented |
+| Target | `htm` and `htu` compared with the configured resource, never request or forwarding headers. Query and fragment are ignored |
+| Token binding | `ath` matches the token and the proof key matches `cnf.jkt` |
+| Replay | One use per key and `jti`. A full store refuses new proofs |
+| Bound token as Bearer | Refused, also by servers that are not in DPoP mode |
+| Client | Fails if it asked for DPoP and got Bearer, or got a bound token with no key |
+
+Limits:
+
+- The replay store is in memory and per process. After a restart, or on another replica, a recorded proof can be replayed until its 60-second window ends, and it still needs the matching token.
+- The proof key lives in the agent's process memory, not in hardware. An attacker who controls the agent process can sign proofs.
+- The demo runs over plain HTTP inside the lab. RFC 9449 expects TLS, and HTTPS integration is not verified yet.
+- RFC 8693 exchange refuses a bound subject token, because no holder proof for the subject exists yet. Exchange in a DPoP-only deployment therefore has no usable subject tokens.
+- The stdio wrapper refuses a bound token: its child reads a token file and has no proof key.
+- The upstream client of `notes.search_upstream` does not send proofs, so an upstream authorization server in DPoP mode refuses it.
+- The FHIR gateway and its TypeScript verifier accept Bearer tokens only. This mode does not protect FHIR.
+- DPoP does not detect misuse: a compromised agent holding its key can still use its own grant.
+

@@ -61,3 +61,5 @@ Grandchildren that detach from the child are not stopped and keep the expired va
 ## Status
 
 Minimal. Children must re-read `MCP_ACCESS_TOKEN_FILE` per upstream call.
+
+DPoP is not supported here. The child reads a token from a file and cannot sign per-request proofs, so the wrapper fails if the authorization server issues a sender-constrained token.
