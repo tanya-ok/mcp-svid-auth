@@ -88,6 +88,13 @@ class TestProofRules:
         assert jwk_thumbprint(jwk) == jwk_thumbprint({**jwk, "ignored": "y"})
         assert "=" not in jwk_thumbprint(jwk)
 
+    def test_non_ascii_access_token_is_refused_not_crashed(self) -> None:
+        proof = DPoPKey().proof("POST", SERVER_A, FAKE_AT)
+        with pytest.raises(DPoPError, match="invalid_access_token"):
+            _verify(proof, access_token="t\u00e4")
+        with pytest.raises(DPoPError, match="invalid_access_token"):
+            access_token_hash("t\u00e4")
+
     def test_ath_binds_the_proof_to_one_token(self) -> None:
         key = DPoPKey()
         proof = key.proof("POST", SERVER_A, FAKE_AT)

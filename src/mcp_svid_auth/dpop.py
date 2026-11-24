@@ -53,7 +53,12 @@ def jwk_thumbprint(jwk: dict[str, str]) -> str:
 
 
 def access_token_hash(token: str) -> str:
-    return _b64url(hashlib.sha256(token.encode("ascii")).digest())
+    try:
+        raw = token.encode("ascii")
+    except UnicodeEncodeError as exc:
+        # JWTs are base64url; anything else is refused with a fixed label, not a crash.
+        raise DPoPError("invalid_access_token") from exc
+    return _b64url(hashlib.sha256(raw).digest())
 
 
 def canonical_htu(url: str) -> str:
