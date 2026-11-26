@@ -672,6 +672,12 @@ class AuthzServer:
                 return JSONResponse({"status": "policy_unavailable"}, status_code=503)
             if self.revocation is not None and not self.revocation.available:
                 return JSONResponse({"status": "revocation_unavailable"}, status_code=503)
+            check = getattr(self.resolver, "check", None)
+            if check is not None:
+                try:
+                    await anyio.to_thread.run_sync(check, self.policy.trust_domain)
+                except Exception:
+                    return JSONResponse({"status": "trust_bundle_unavailable"}, status_code=503)
             if self.signer is not None:
                 try:
                     await anyio.to_thread.run_sync(self.signer.public_jwks)

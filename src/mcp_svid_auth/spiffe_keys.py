@@ -57,6 +57,10 @@ class StaticJwksResolver:
     def from_file(cls, trust_domain: str, path: Path) -> StaticJwksResolver:
         return cls({trust_domain: json.loads(path.read_text(encoding="utf-8"))})
 
+    def check(self, trust_domain: str) -> None:
+        if trust_domain not in self.bundles:
+            raise AuthError("invalid_client", "unknown trust domain")
+
     def resolve(self, trust_domain: str, kid: str | None) -> Any:
         jwks = self.bundles.get(trust_domain)
         if jwks is None:
@@ -67,19 +71,31 @@ class StaticJwksResolver:
         raise AuthError("invalid_client", "unknown signing key")
 
 
+def _workload_client(socket_path: str | None) -> Any:
+    from spiffe import WorkloadApiClient  # noqa: PLC0415
+
+    return WorkloadApiClient(socket_path=socket_path, default_timeout=5)
+
+
 @dataclass
 class WorkloadApiResolver:
     """JWT bundles from the SPIFFE Workload API, cached briefly."""
 
     socket_path: str | None = None
+    client_factory: Any = _workload_client
     _cached_at: float = 0.0
     _bundles: Any = None
 
+    def check(self, trust_domain: str) -> None:
+        """Readiness: a bundle for `trust_domain` fetched within the cache window."""
+        from spiffe import TrustDomain  # noqa: PLC0415
+
+        if self._bundle_set().get_bundle_for_trust_domain(TrustDomain(trust_domain)) is None:
+            raise AuthError("invalid_client", "unknown trust domain")
+
     def _bundle_set(self) -> Any:
         if self._bundles is None or time.monotonic() - self._cached_at > _BUNDLE_CACHE_SECONDS:
-            from spiffe import WorkloadApiClient  # noqa: PLC0415
-
-            client = WorkloadApiClient(socket_path=self.socket_path, default_timeout=5)
+            client = self.client_factory(self.socket_path)
             try:
                 self._bundles = client.fetch_jwt_bundles()
             finally:

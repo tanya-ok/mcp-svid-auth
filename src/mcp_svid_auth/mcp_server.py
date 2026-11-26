@@ -90,6 +90,8 @@ from mcp_svid_auth.tls import add_tls_server_flags, client_context, tls_server_k
 
 JWKS_CACHE_SECONDS = 60
 JWKS_MIN_REFETCH_SECONDS = 10
+# Access token lifetime plus clock skew: the longest a token signed under a cached key lives.
+JWKS_STALE_SECONDS = 330
 _ACCESS_TOKEN_ALGS = ["ES256"]
 _ACCESS_TOKEN_TYP = "at+jwt"  # noqa: S105 - media type, not a secret
 MAX_BODY_BYTES = 1024 * 1024
@@ -141,16 +143,31 @@ class JwksFetcher:
     _fetched_at: float = 0.0
     _attempted_at: float | None = None
     _lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    degraded: bool = False
 
     async def get(self, *, refresh: bool = False) -> dict[str, Any]:
         async with self._lock:
             if self._cached is None or self.clock() - self._fetched_at > JWKS_CACHE_SECONDS:
                 if not self._may_refetch():
-                    raise JwksUnavailableError("JWKS retry budget exceeded")
-                return await self._fetch()
+                    return self._stale(JwksUnavailableError("JWKS retry budget exceeded"))
+                try:
+                    return await self._fetch()
+                except JwksUnavailableError as exc:
+                    return self._stale(exc)
             if refresh and self._may_refetch():
-                return await self._fetch()
+                with contextlib.suppress(JwksUnavailableError):
+                    return await self._fetch()
             return self._cached
+
+    def _stale(self, error: JwksUnavailableError) -> dict[str, Any]:
+        """Serve the last good set while tokens signed under it can still be valid."""
+        if self._cached is None or self.clock() - self._fetched_at > (
+            JWKS_CACHE_SECONDS + JWKS_STALE_SECONDS
+        ):
+            self.degraded = False
+            raise error
+        self.degraded = True
+        return self._cached
 
     def _may_refetch(self) -> bool:
         return (
@@ -186,6 +203,7 @@ class JwksFetcher:
             raise JwksUnavailableError("too many JWKS keys")
         self._cached = jwks
         self._fetched_at = self._attempted_at
+        self.degraded = False
         return jwks
 
 
@@ -919,6 +937,8 @@ def create_app(  # noqa: PLR0913
                 state.ping()
             except StateUnavailableError:
                 return JSONResponse({"status": "state_store_unavailable"}, status_code=503)
+        if getattr(source, "degraded", False):
+            return JSONResponse({"status": "degraded", "jwks": "stale"})
         return JSONResponse({"status": "ok"})
 
     prm_path = urlsplit(metadata_url).path
