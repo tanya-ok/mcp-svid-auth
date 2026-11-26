@@ -1,53 +1,48 @@
 # Production readiness
 
-Status on 2026-11-26: the code paths below are implemented and covered by offline tests. The project is **not yet production-ready**: the remaining items in the second table need infrastructure, accounts or decisions from the operator, and no production deployment has been run.
+Status on 2026-11-26: **not yet production-ready**. The items in the first table are implemented and covered by offline tests, some against real local servers. The second table lists what is still open, including work that can be done without the owner but was not finished (the Kubernetes lab items). No production deployment has been run.
 
-Type legend: **Code** can be finished in this repository. **Infra** needs infrastructure the operator provides. **Decision** needs an owner decision or an external party.
+Type legend: **Code** can be finished in this repository. **Lab** needs a run of the repository's Kubernetes lab. **Infra** needs infrastructure the operator provides. **Decision** needs an owner decision, account or external party.
 
-## Closed in code
+## Closed
 
-| Gap | Severity | Type | What exists now | Tests |
-|---|---|---|---|---|
-| Plain HTTP listeners | High | Code | `--tls-cert`, `--tls-key` on `mcp-svid-authz` and `mcp-svid-notes`; TLS 1.2 minimum, forward-secret TLS 1.2 suites; the public URL must be `https`; a plain listener off loopback is announced as `plaintext_listener` on stderr | `test_tls_listeners.py` |
-| No client certificate check on listeners | Medium | Code | `--tls-client-ca` requires a client certificate signed by that CA (mTLS) | `test_tls_listeners.py` |
-| Outbound trust limited to the system store | Medium | Code | `--ca-file` for the agent, stdio wrapper and MCP server (JWKS, upstream). Verification and hostname checks stay on | `test_tls_listeners.py`, `test_https_end_to_end.py` |
-| DPoP not verified over HTTPS | Medium | Code | Discovery, JWT-SVID exchange and a DPoP-bound tool call over real TLS sockets; Bearer use and a foreign proof key refused | `test_https_end_to_end.py` |
-| In-cluster names need the blanket dev flag | Medium | Code | `--allow-private-host HOST`: exact names may resolve to private addresses; https and all other checks stay on | `test_private_hosts.py` |
-| No access token revocation | High | Code | `--revocation-file` on both servers: revoked `jti` and blocked SPIFFE IDs (subject, client or actor) are refused within `--revocation-poll-seconds` (default 5 s). Blocked IDs get no new token or exchange. Unreadable or invalid state fails closed and fails readiness | `test_revocation.py` |
-| No access token `jti` tracking | Medium | Code | Opt-in `--max-calls-per-token N` counts tool calls per `jti` until expiry, bounded by `--token-use-cache-size`, refusing new tokens when full | `test_revocation.py` |
-| Signing keys lost on restart | High | Code | `--signing-key-file` loads an owner-only P-256 key with a stable RFC 7638 `kid`; replicas sharing the file publish one key. `--verification-key-file` publishes previous public keys for rotation overlap | `test_signing_key_file.py` |
-| Audit checkpoint replaceable by the writer | High | Code | Ed25519 signed checkpoints (`--signing-key`, `--checkpoint-public-key`); a rebuilt, edited or re-signed checkpoint fails | `test_audit_checkpoint_signing.py` |
-| No health or readiness endpoints | Medium | Code | `/healthz` (liveness) and `/readyz`: authz not ready after a failed policy load or unreadable revocation state; MCP server not ready while the JWKS or revocation state is unavailable | `test_tls_listeners.py`, `test_revocation.py` |
-| Source archive picked up local directories | Low | Code | Explicit sdist allowlist; `make package` validates contents, license and checksums | `make package` |
+| Gap | Severity | What exists now | Tests |
+|---|---|---|---|
+| Plain HTTP listeners | High | `--tls-cert`, `--tls-key` on both servers; TLS 1.2 minimum; the public URL must be `https`; a plain listener off loopback prints `plaintext_listener` | `test_tls_listeners.py` |
+| No client certificate check on listeners | Medium | `--tls-client-ca` requires a client certificate from that CA | `test_tls_listeners.py` |
+| Outbound trust limited to the system store | Medium | `--ca-file` for the agent, stdio wrapper and MCP server, verification kept on | `test_tls_listeners.py`, `test_https_end_to_end.py` |
+| DPoP not verified over HTTPS | Medium | Full DPoP flow over real TLS sockets | `test_https_end_to_end.py` |
+| In-cluster names need the blanket dev flag | Medium | `--allow-private-host` for exact names | `test_private_hosts.py` |
+| Per-process replay caches and rate budgets | High | `--state-store-url`: Valkey or Redis shared by replicas, atomic, TLS and password file, refuses evicting stores, fails closed. In-process state stays the default | `test_shared_state.py` (two authz instances on one real server, outage, eviction policy, TLS); skipped without a server binary |
+| Ephemeral signing key by default | High | Authz requires `--signing-key-file`, a transit signer, or the explicit `--dev-ephemeral-signing-key` | `test_transit_signer.py`, `test_signing_key_file.py` |
+| Signing key lost on restart, no remote signer | High | Persistent key file with stable `kid` and published previous keys; OpenBao or Vault transit signer behind a `Signer` seam (`sign`, `public_jwks`), rotation keeps old tokens valid, outages fail closed | `test_signing_key_file.py`, `test_transit_signer.py` (real Vault 2.1.1 dev server; OpenBao not run); skipped without a binary |
+| No access token revocation | High | `--revocation-file` on both servers: revoked `jti` and blocked SPIFFE IDs refused within `--revocation-poll-seconds` (0.5 to 300). Bounded no-follow reads, strict format, optional Ed25519 signature, fails closed | `test_revocation.py`, `test_revocation_files.py` |
+| Issued token not findable for revocation | High | Authz allow records include `jti`, audience, expiry, actor and a DPoP key hash | `test_issuance_audit.py` |
+| No access token `jti` tracking | Medium | `--max-calls-per-token` with a per-subject quota in memory or the shared store; `mcp-svid-agent --token-per-call` | `test_revocation*.py`, `test_shared_state.py`, `test_agent_token_per_call.py` |
+| Audit checkpoint replaceable or stale | High | Ed25519 signed checkpoints with sequence, time and previous hash; `--min-sequence`, `--min-records`, `--max-age` high-water checks | `test_audit_checkpoint_signing.py`, `test_audit_freshness.py` |
+| Audit chain with replicas and rotation | High | `replica_id` and `schema_version` in records, fsync per record, one writer per file (lock), bounded tail on resume, rotation verified with `--continues-from` | `test_audit_freshness.py` |
+| Key and secret files read unsafely | Medium | One descriptor, no symlinks, regular file, size cap, owner-only private files | `test_signing_key_file.py`, `test_revocation_files.py`, `test_shared_state.py` |
+| No health, readiness or metrics | Medium | `/healthz`, `/readyz` (policy, trust bundle, revocation, signer, store, JWKS with a `degraded` state), `--metrics` with bounded labels | `test_tls_listeners.py`, `test_degraded_readiness.py`, `test_metrics.py` |
+| JWKS outage fails every token at cache expiry | Medium | Last good JWKS served for the token lifetime plus skew, readiness `degraded` | `test_degraded_readiness.py` |
+| A replayed DPoP proof burns the SVID | Low | The proof is recorded before the SVID `jti` | `test_issuance_audit.py` |
+| Source archive picked up local directories | Low | Explicit sdist allowlist | `make package` |
 
 ## Remaining before production deployment
 
 | Gap | Severity | Type | Why it is open | Plan |
 |---|---|---|---|---|
-| Replay caches and rate budgets are per process | High | Infra | SVID `jti`, DPoP proof `jti`, token call counts and request budgets live in memory. Replicas or a restart do not share them, so a replay can succeed on another replica within the credential lifetime | Operator selects a shared store (for example a replicated key-value service). Then add a store interface with fail-closed semantics and run a multi-replica test. Until then run one authz replica, or accept the stated replay window |
-| Workload admission is not constrained | High | Infra | Anyone allowed to start a pod with an authorized ServiceAccount obtains its SPIFFE ID | Add an admission policy that restricts which principals may use each authorized ServiceAccount, keep the copied-label denial, and prove one denied and one allowed launch in the lab. Needs a lab run by the owner |
-| Lab still runs plain HTTP and `allow-reuse-within-lifetime` | High | Infra | TLS flags exist, but `deploy/` is unchanged and the lab was not run in this session. The SPIRE 1.15.3 agent re-serves cached SVIDs, so strict replay mode breaks normal fetches there | Issue lab certificates, switch `deploy/` to `--tls-cert` and `https` URLs, rerun all lab scenarios. Strict replay needs an upstream SPIRE fix or a non-caching SVID source |
-| Signing key custody | High | Infra | `--signing-key-file` reads a local file. No KMS or HSM signer | Operator chooses a KMS or HSM. Add a signer interface for it; key never leaves the device |
-| Checkpoint key custody and retained audit storage | High | Infra | Signing proves who made a checkpoint, not that logs reached durable storage. Logs are local files or stderr | Operator provides append-only log shipping and an offline checkpoint signing key with a capture schedule |
-| Revocation file distribution | Medium | Infra | Each replica reads its own file path. Propagation is bounded only after the file changes on every replica | Mount one source (for example a config map or shared volume) and alert on `/readyz` failures |
-| Grant policy has no review flow | Medium | Decision | `policy.yaml` is a local file reloaded on change. No versioning, approval or signature | Owner decides the change process (for example reviewed Git changes with a signed bundle). Code can then verify a signature before reload |
-| Human user delegation | Medium | Decision | Token exchange accepts only tokens this server issued. No human identity provider token is accepted as `subject_token` | Requires a design decision on the identity provider and consent model |
-| Release, package and supply-chain attestation | Medium | Decision | Local wheel and source archive build and validate. Nothing is published, signed or tagged. Version stays 0.1.0 | Owner decides the version, PyPI trusted publishing, artifact signing and SBOM. CI publishing changes need the owner's accounts |
-| Metrics | Low | Code | Decisions are in JSON audit lines only. No metrics endpoint | Derive metrics from audit lines in the log pipeline, or add a bounded metrics endpoint |
-| Agent client for single-call tokens | Low | Code | The bundled agent reuses one token for all its calls, so `--max-calls-per-token 1` refuses its second call | Fetch a new token per call when the server sets a call limit |
-| Independent security review | High | Decision | All checks are self-run. No external review or penetration test | Owner commissions a review against this table and `docs/threat-model.md` |
-| Deployment outside the local lab | High | Infra | Only the single-node local lab and offline tests were run | Owner deploys to a non-lab environment with TLS, a shared store and log shipping, then records the results here |
+| Workload admission is not constrained | High | Lab | Anyone allowed to start a pod with an authorized ServiceAccount obtains its SPIFFE ID. No admission policy was written: it must be exercised in the lab, which was not run | Add a ValidatingAdmissionPolicy that limits which principals may create pods using each authorized ServiceAccount; prove one denied and one allowed launch plus the copied-label denial in the lab |
+| Lab runs plain HTTP and `allow-reuse-within-lifetime` | High | Lab | Both servers support TLS, but `deploy/` still uses http URLs. The lab VM name is fixed to `security-lab`, which this round was not allowed to touch, and the lab needs the sibling repositories | Make the lab VM name configurable, issue lab certificates, switch services and agents to `https` with `--ca-file`, rerun all 18 scenarios. Strict SVID replay needs an upstream SPIRE fix or a non-caching SVID source |
+| Lab not rerun after these changes | High | Lab | The last lab pass is 2026-10-13. The lab authz now needs `--dev-ephemeral-signing-key` (added to `deploy/kubernetes/services.yaml`), which has not run in the lab | Run `make demo` and the scoped teardown, record the result in the README Status table |
+| Cloud KMS signer | Medium | Decision | The transit signer is implemented and tested; a cloud KMS adapter needs an account | Implement `sign` and `public_jwks` for the chosen KMS and test against the account |
+| Durable audit storage and checkpoint key custody | High | Infra | Records are fsynced locally and checkpoints are signed, but log shipping to append-only storage and an offline checkpoint signing job are operator systems | Operator provides log shipping, the checkpoint key host and a capture schedule; see [operations](operations.md) |
+| Store and transit high availability | High | Infra | The code uses one store URL and one transit address. Replication, persistence and failover are the operator's | Operator runs a replicated Valkey with persistence and an HA OpenBao or Vault |
+| Revocation file distribution | Medium | Infra | Each replica polls its own path | Operator mounts one source on every replica and alerts on readiness failures |
+| Grant policy has no review flow | Medium | Decision | `policy.yaml` is a local file reloaded on change | Owner decides the change process; code can then verify a signed policy bundle |
+| Human user delegation | Medium | Decision | Token exchange accepts only tokens this server issued | Needs an identity provider and consent design |
+| Release, package and supply-chain attestation | Medium | Decision | Local wheel and source archive build and validate. Nothing is published, signed or tagged; version stays 0.1.0 | Owner decides the version, PyPI trusted publishing, artifact signing and SBOM |
+| Independent security review | High | Decision | All checks are self-run | Owner commissions a review against this table and the threat model |
+| Deployment outside the local lab | High | Infra | Only the local lab and offline tests were run | Owner deploys with TLS, a shared store, a signer and log shipping, then records the result |
+| CI does not run the transit tests | Low | Code | CI installs Valkey or Redis but no OpenBao or Vault binary, so those tests skip there | Add a pinned OpenBao binary to CI |
 
-## Operating notes
-
-| Task | Command or setting |
-|---|---|
-| Serve HTTPS | `--tls-cert server.pem --tls-key server.key`; add `--tls-client-ca clients-ca.pem` for mTLS |
-| Trust a private CA outbound | `--ca-file ca.pem` |
-| Revoke a token or block a workload | Add the `jti` to `revoked_jti` or the SPIFFE ID to `blocked_spiffe_ids` in the revocation file; it applies within `--revocation-poll-seconds` |
-| Rotate a persistent signing key | Start with the new `--signing-key-file` and the old public key as `--verification-key-file`; remove the old key after the access token lifetime plus clock skew |
-| Capture a signed checkpoint | `mcp-svid-audit-verify log.jsonl --write-checkpoint cp.json --signing-key checkpoint.key` |
-| Verify against it | `mcp-svid-audit-verify log.jsonl --checkpoint cp.json --checkpoint-public-key checkpoint.pub` |
-| Probes | Liveness `GET /healthz`, readiness `GET /readyz` |
-
-Flag defaults and the revocation file schema are in the generated [configuration reference](configuration.md).
+Operating instructions are in [operations](operations.md); flag defaults in the generated [configuration reference](configuration.md).
