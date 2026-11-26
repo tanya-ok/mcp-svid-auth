@@ -1,7 +1,7 @@
 # Security model
 
 !!! warning
-    Not yet production-ready. Do not deploy it to protect real data until the remaining items in [production readiness](production-readiness.md) are closed for your environment. Report vulnerabilities privately through GitHub private vulnerability reporting, not in a public issue.
+    Production deployment is not claimed. Do not deploy it to protect real data until the remaining items in [production readiness](production-readiness.md) are closed for your environment. Report vulnerabilities privately through GitHub private vulnerability reporting, not in a public issue.
 
 ## Threat model
 
@@ -144,7 +144,7 @@ The token endpoint accepts `grant_type=urn:ietf:params:oauth:grant-type:token-ex
 
 ## Non-goals
 
-- Not yet production-ready. See [production readiness](production-readiness.md) for the open items: admission policy, TLS in the lab and a lab rerun, a cloud KMS adapter, operator storage and HA, a release and an independent review.
+- Production deployment is not claimed. See [production readiness](production-readiness.md) for the open items: a cloud KMS adapter, operator storage and HA, a release and an independent review.
 - Not a replacement for an MCP gateway such as agentgateway. It shows the token flow a gateway could implement.
 - No human user delegation. Token exchange delegates between workloads that hold tokens from this server; a human identity provider token is not accepted as `subject_token`. Not exercised in the Kubernetes demo yet.
 - No X.509-SVID or WIT-SVID client authentication. JWT-SVID only.
@@ -203,7 +203,7 @@ Limits:
 
 - Without `--state-store-url` the replay store is in memory and per process: after a restart, or on another replica, a recorded proof can be replayed until its 60-second window ends, and it still needs the matching token. With a store every replica shares it.
 - The proof key lives in the agent's process memory, not in hardware. An attacker who controls the agent process can sign proofs.
-- The lab runs over plain HTTP. RFC 9449 expects TLS. The full DPoP flow is verified over real HTTPS sockets offline (`tests/test_https_end_to_end.py`), not yet in the lab.
+- The lab services use TLS since 2026-11-26, but DPoP is not enabled in the lab. The full DPoP flow is verified over real HTTPS sockets offline (`tests/test_https_end_to_end.py`).
 - RFC 8693 exchange refuses a bound subject token, because no holder proof for the subject exists yet. Exchange in a DPoP-only deployment therefore has no usable subject tokens.
 - The stdio wrapper refuses a bound token: its child reads a token file and has no proof key.
 - The upstream client of `notes.search_upstream` does not send proofs, so an upstream authorization server in DPoP mode refuses it.

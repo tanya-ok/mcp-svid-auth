@@ -28,6 +28,8 @@ published as a package.
 - Hash-chained audit lines, terminal checkpoints and the `mcp-svid-audit-verify` command.
 - Grant policy reload on SIGHUP or file change; tool calls bounded by the caller token expiry.
 - Scripted threat model demo scenarios, later run as eighteen asserted scenarios in a shared Kubernetes lab on Lima, k3s and containerd with SPIRE.
+- Lab ServiceAccount admission policy with four negative and positive scenarios (19-22), and TLS between all lab services with a per-run CA and `--allow-private-host`; the lab ran 22 of 22 on 2026-11-26.
+- `LAB_VM` and `SVID_LAB_REPO_<NAME>` select the Lima instance and repository checkouts for the lab.
 - Read-only Headlamp interface and an optional passwordless ZITADEL viewer for the lab.
 - Request and verification budgets, and planned signing key rotation with public key overlap.
 - Local MCP review orchestration (quorum) with recorded portfolio review evidence.

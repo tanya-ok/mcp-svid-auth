@@ -62,4 +62,4 @@ The published validation summary records actual execution results in [Publicatio
 The default lab also asserts scenarios 15-18: three FHIR tools through real SPIRE
 mTLS and resource-bound OAuth, malformed/unknown request rejection, denied
 intruder identity, rejected missing client certificate and FHIR audit validation.
-See [shared Kubernetes lab](kubernetes-lab.md). The Podman compatibility path was retired on 2026-10-13.
+Scenarios 19-22 check the ServiceAccount admission policy: a denied pod, a denied Deployment, a denied unlisted ServiceAccount and an admitted operator launch. All lab services use TLS. See [shared Kubernetes lab](kubernetes-lab.md). The Podman compatibility path was retired on 2026-10-13.

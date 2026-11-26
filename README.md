@@ -1,6 +1,6 @@
 # mcp-svid-auth
 
-An OAuth token endpoint, MCP resource-server verifier and agent client that let an AI agent exchange its SPIFFE workload identity for a short-lived, audience-bound MCP access token, with no static API key. It supports HTTPS and mTLS listeners, DPoP, token revocation, replay and rate-limit state shared through Valkey, persistent or transit-held signing keys, signed audit checkpoints, readiness probes and metrics. Not yet production-ready: the [production readiness](docs/production-readiness.md) table lists what is closed and what is still open, and [operations](docs/operations.md) describes how to run it.
+An OAuth token endpoint, MCP resource-server verifier and agent client that let an AI agent exchange its SPIFFE workload identity for a short-lived, audience-bound MCP access token, with no static API key. It supports HTTPS and mTLS listeners, DPoP, token revocation, replay and rate-limit state shared through Valkey, persistent or transit-held signing keys, signed audit checkpoints, readiness probes and metrics. Production deployment is not claimed: the [production readiness](docs/production-readiness.md) table lists what is closed and what is still open, and [operations](docs/operations.md) describes how to run it.
 
 Documentation: https://tanya-ok.github.io/mcp-svid-auth/
 
@@ -112,7 +112,7 @@ Optional local anonymization denylist: put one term per line in `tests/denylist.
 
 ### Full Kubernetes lab (requires unpublished components)
 
-The integrated lab is not reproducible from this repository alone. It needs a sibling checkout of `mcp-spiffe-bridge`, which is not yet published, and of [`hipaa-fhir-mcp`](https://github.com/tanya-ok/hipaa-fhir-mcp). On macOS it also needs [Lima](https://www.cncf.io/projects/lima/) 2.2.1+. The demo scenarios below were recorded in that lab. See [shared security lab](docs/kubernetes-lab.md) and [CNCF runtime](docs/runtime.md).
+The integrated lab is not reproducible from this repository alone. It needs a sibling checkout of `mcp-spiffe-bridge`, which is not yet published, and of [`hipaa-fhir-mcp`](https://github.com/tanya-ok/hipaa-fhir-mcp). On macOS it also needs [Lima](https://www.cncf.io/projects/lima/) 2.2.1+. The demo scenarios below were recorded in that lab. The Lima instance name defaults to `security-lab`; set `LAB_VM` to use another, and `SVID_LAB_REPO_MCP_SPIFFE_BRIDGE` and `SVID_LAB_REPO_HIPAA_FHIR_MCP` to point at other checkouts. See [shared security lab](docs/kubernetes-lab.md) and [CNCF runtime](docs/runtime.md).
 
 ```sh
 make runtime-up   # dedicated Lima Kubernetes/containerd VM: 2 CPUs, 4 GiB memory
@@ -141,7 +141,7 @@ The tool response poisoning scenario runs in process without the lab: `make atta
 | 3 | `agent/intruder` | notes-a | valid SVID, not in `policy.yaml`, token request fails with `unauthorized_client` |
 | 4 | `agent/research` | token for notes-a sent to notes-b | 401 `invalid_token`, audit reason `InvalidAudienceError` |
 | 5 | `agent-impostor` pod with the research label and another ServiceAccount | notes-a | gets the intruder identity; token request denied |
-| 6 | `agent/research` | notes-rogue, whose PRM names `http://rogue-as:8100` | `issuer_refused`, no SVID fetched (LS-3) |
+| 6 | `agent/research` | notes-rogue, whose PRM names `https://rogue-as:8100` | `issuer_refused`, no SVID fetched (LS-3) |
 | 7 | `agent/research`, one JWT-SVID posted twice to `/token` | authz | two tokens under `allow-reuse-within-lifetime` (LS-9) |
 | 8 | `agent/research` calls `notes.search_upstream` | notes-a, which calls notes-b | notes-b audits `mcp/notes-a`, not the caller; scenario 4 is the forwarding variant (LS-4) |
 | 9 | `agent/research`, grant for notes-b removed while authz runs | notes-b | `invalid_target` after the next policy reload (LS-8) |
@@ -154,6 +154,10 @@ The tool response poisoning scenario runs in process without the lab: `make atta
 | 16 | Intruder with valid SPIRE certificate | FHIR bridge | SPIFFE caller allowlist denies access |
 | 17 | Workload without client certificate | FHIR bridge | TLS handshake denied |
 | 18 | FHIR audit checker | Service log | One record per invocation, verified caller, data minimization |
+| 19 | Principal without launch rights, allowed ServiceAccount, as a pod | Kubernetes API | Denied by the admission policy |
+| 20 | Same principal, as a Deployment | Kubernetes API | Denied by the admission policy |
+| 21 | Cluster administrator, ServiceAccount outside the allow list | Kubernetes API | Denied by the admission policy |
+| 22 | Lab operator, allowed ServiceAccount | Kubernetes API | Admitted (server-side dry run) |
 
 Audit line example:
 
@@ -181,7 +185,7 @@ Denials record unverified subjects as `unverified:sha256:<digest prefix>`. A che
 
 ## Non-goals
 
-- Not yet production-ready. Open items include the ServiceAccount admission policy, TLS inside the lab, a lab rerun, a cloud KMS adapter, operator storage and HA for logs, store and signer, a release and an independent review. See [production readiness](docs/production-readiness.md).
+- Production deployment is not claimed. Open items include a cloud KMS adapter, operator storage and HA for logs, store and signer, a release and an independent review. See [production readiness](docs/production-readiness.md).
 - Not a replacement for an MCP gateway such as agentgateway. It shows the token flow a gateway could implement.
 - No human user delegation. Opt-in RFC 8693 token exchange (`--token-exchange`) delegates between workloads with an `act` claim, no chains; not yet exercised in the Kubernetes demo.
 - The authorization server accepts JWT-SVID client assertions only. The shared FHIR transport also uses X.509-SVID mTLS. No WIT-SVID client authentication.
@@ -196,14 +200,14 @@ The dated [publication validation](docs/publication.md) records the earlier chec
 | Item | State |
 |---|---|
 | Offline checks | Pass on 2026-11-26: 798 tests (1 skipped) on Python 3.12 and 3.13, including real TLS, mTLS and HTTPS DPoP sockets, a local Redis 7.2 server for the shared store and a Vault 2.1 dev server for the transit signer; lint, formatting, strict types, generated docs, strict documentation build and package validation. Earlier: pass on 2026-10-13: 537 tests on Python 3.12 and 3.13 after retiring the Podman backend and adding runtime migration checks, lint, formatting, strict types, generated docs and strict documentation build; source/history credential checks have no unresolved findings; see the exact packet-hash false positive in the portfolio readiness record |
-| Kubernetes/containerd integration | Not rerun after the 2026-11-26 changes; the only `deploy/` change is `--dev-ephemeral-signing-key` for the lab authz instances. Last pass on 2026-10-13: fresh rebuild, all 18 scenarios and final scoped teardown. Planned signing rotation preserved old/new tokens; three real SPIRE fetches returned one cached assertion with jti. CISO namespace UID and shared VM preserved. See [rotation evidence](docs/auth-cost-rotation.md) |
+| Kubernetes/containerd integration | Pass on 2026-11-26 in a separate Lima VM (`svid-prod-lab`): fresh image build, all 22 scenarios over TLS (the original 18 plus four ServiceAccount admission checks) and scoped teardown. The admission check failed three of four expectations with the policy bindings removed. Earlier: all 18 scenarios on 2026-10-13 over plain HTTP. See [shared lab](docs/kubernetes-lab.md) and [rotation evidence](docs/auth-cost-rotation.md) |
 | Headlamp interface | Namespace-scoped browsing fixed on 2026-10-20: fresh-browser Pods, Deployments and Services passed in an isolated VM, with live 403/405 negative checks and all 18 security scenarios. RBAC unchanged. A combined physical-passkey/manual resource check after this fix is still pending. See [interface and boundaries](docs/headlamp-ui.md) |
 | Optional ZITADEL identity | Pass: 11 real synthetic WebAuthn/OIDC checks, 4 closed Google setup checks and full scoped lifecycle on 2026-10-06. The recovery cycle sampled at most 1858.1 MiB guest use including native startup. Real Google login and physical enrollment remain unverified. See [identity boundaries](docs/passwordless-identity.md) |
 | Historical Podman validation | Retired on 2026-10-13; the 2026-10-05 result remains historical evidence only |
 | Default strict replay mode | Live comparison: first exchange succeeds, second is denied. Normal demo explicitly accepts cached SVID reuse |
 | Independent TypeScript MCP SDK | SDK 1.32.2 with explicit JWT-SVID adapter: discovery, exchange, initialize, scoped listing and read verified; added write denial checked separately |
 | Audit completeness | Signed, chained checkpoints with high-water checks, one writer per file and rotation tested offline; checkpoint key custody and durable log storage are operator responsibilities |
-| Production readiness | Not yet: admission policy, lab TLS and rerun, cloud KMS adapter, operator storage and HA, release and independent review remain. See [production readiness](docs/production-readiness.md) |
+| Production readiness | Not claimed: cloud KMS adapter, operator storage and HA, release and independent review remain, and the lab is a single pass. See [production readiness](docs/production-readiness.md) |
 | Publication packages | Local wheel and source archive, license and contents verified; never uploaded |
 
 ## License
