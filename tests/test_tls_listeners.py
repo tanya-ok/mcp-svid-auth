@@ -133,6 +133,10 @@ class Pki:
 
 @pytest.fixture
 def pki(tmp_path: Path) -> Pki:
+    return make_pki(tmp_path)
+
+
+def make_pki(tmp_path: Path) -> Pki:
     ca = Authority.create(tmp_path, "main")
     other = Authority.create(tmp_path, "other")
     return Pki(
