@@ -15,6 +15,7 @@ import os
 import re
 import select
 import signal
+import sys
 import threading
 import time
 import uuid
@@ -24,6 +25,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qsl
 
+import anyio
 import jwt
 from cryptography.hazmat.primitives.asymmetric import ec
 from jwt.algorithms import ECAlgorithm
@@ -44,6 +46,7 @@ from mcp_svid_auth.revocation import (
     load_revocation_key,
     poll_seconds_arg,
 )
+from mcp_svid_auth.signers import Signer, SignerError, VaultTransitSigner
 from mcp_svid_auth.signing_keys import (
     MAX_PUBLISHED_KEYS,
     SigningKeyError,
@@ -63,7 +66,7 @@ from mcp_svid_auth.state import (
     add_state_flags,
     state_from_args,
 )
-from mcp_svid_auth.tls import add_tls_server_flags, tls_server_kwargs
+from mcp_svid_auth.tls import add_tls_server_flags, client_context, tls_server_kwargs
 
 CLIENT_ASSERTION_TYPE = "urn:ietf:params:oauth:client-assertion-type:jwt-spiffe"
 ACCESS_TOKEN_ALG = "ES256"  # noqa: S105 - algorithm name, not a secret
@@ -204,6 +207,7 @@ class AuthzServer:
     # Previous public keys published for overlap after an operator-managed rotation.
     published_keys: list[dict[str, Any]] = field(default_factory=list)
     state: SharedState | None = None
+    signer: Signer | None = None
     _policy_digest: str | None = None
     _reload_lock: threading.Lock = field(default_factory=threading.Lock)
 
@@ -287,7 +291,34 @@ class AuthzServer:
                 now + SIGNING_PREPUBLISH_SECONDS,
             )
 
+    def _sign(self, claims: dict[str, Any]) -> str:
+        if self.signer is not None:
+            try:
+                return self.signer.sign(claims)
+            except SignerError as exc:
+                raise AuthError(
+                    "temporarily_unavailable", "signing unavailable", 503, str(exc)
+                ) from None
+        with self._signing_lock:
+            self._advance_signing_keys()
+            self._active_token_expiry = max(
+                self._active_token_expiry, self.clock() + self.token_ttl
+            )
+            return jwt.encode(
+                claims,
+                self.signing_key,
+                algorithm=ACCESS_TOKEN_ALG,
+                headers={"kid": self.kid, "typ": "at+jwt"},
+            )
+
+    def _published(self, active: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        kids = {jwk["kid"] for jwk in active}
+        return active + [jwk for jwk in self.published_keys if jwk["kid"] not in kids]
+
     def jwks(self) -> dict[str, Any]:
+        """Published verification keys. Raises SignerError when a remote signer is down."""
+        if self.signer is not None:
+            return {"keys": self._published(self.signer.public_jwks())}
         with self._signing_lock:
             self._advance_signing_keys()
             keys = [_public_jwk(self.signing_key, self.kid)]
@@ -395,10 +426,18 @@ class AuthzServer:
             raise AuthError("invalid_grant", "malformed subject token") from exc
         if header.get("typ") != "at+jwt" or header.get("alg") != ACCESS_TOKEN_ALG:
             raise AuthError("invalid_grant", "unsupported subject token")
-        with self._signing_lock:
-            keys = {self.kid: _public_jwk(self.signing_key, self.kid)}
-            keys.update({jwk["kid"]: jwk for jwk, _ in self._retired_keys})
-            keys.update({jwk["kid"]: jwk for jwk in self.published_keys if jwk["kid"] != self.kid})
+        if self.signer is not None:
+            try:
+                keys = {jwk["kid"]: jwk for jwk in self.jwks()["keys"]}
+            except SignerError:
+                raise AuthError("temporarily_unavailable", "signing unavailable", 503) from None
+        else:
+            with self._signing_lock:
+                keys = {self.kid: _public_jwk(self.signing_key, self.kid)}
+                keys.update({jwk["kid"]: jwk for jwk, _ in self._retired_keys})
+                keys.update(
+                    {jwk["kid"]: jwk for jwk in self.published_keys if jwk["kid"] != self.kid}
+                )
         jwk = keys.get(str(header.get("kid")))
         if jwk is None:
             raise AuthError("invalid_grant", "subject token key unknown")
@@ -533,17 +572,7 @@ class AuthzServer:
             "jti": uuid.uuid4().hex,
             **extra,
         }
-        with self._signing_lock:
-            self._advance_signing_keys()
-            self._active_token_expiry = max(
-                self._active_token_expiry, self.clock() + self.token_ttl
-            )
-            token = jwt.encode(
-                claims,
-                self.signing_key,
-                algorithm=ACCESS_TOKEN_ALG,
-                headers={"kid": self.kid, "typ": "at+jwt"},
-            )
+        token = self._sign(claims)
         body: dict[str, Any] = {
             "access_token": token,
             "token_type": "DPoP" if proof is not None else "Bearer",
@@ -579,7 +608,12 @@ class AuthzServer:
             if len(form) != len(items):
                 # RFC 6749 section 3.2: request parameters MUST NOT be included more than once.
                 raise AuthError("invalid_request", "repeated request parameter")
-            body, issued = self._issue(form, request.headers.getlist("dpop"))
+            proofs = request.headers.getlist("dpop")
+            if self.signer is not None:
+                # A remote signer does network I/O; keep it off the event loop.
+                body, issued = await anyio.to_thread.run_sync(self._issue, form, proofs)
+            else:
+                body, issued = self._issue(form, proofs)
         except AuthError as exc:
             detail = f" ({exc.detail})" if exc.detail else ""
             self._audit(form, "deny", f"{exc.code}: {exc.description}{detail}")
@@ -618,7 +652,13 @@ class AuthzServer:
 
     def app(self) -> Starlette:
         async def jwks(_: Request) -> Response:
-            return JSONResponse(self.jwks())
+            try:
+                keys = await anyio.to_thread.run_sync(self.jwks)
+            except SignerError:
+                return JSONResponse(
+                    {"error": "temporarily_unavailable"}, status_code=503, headers=_NO_STORE
+                )
+            return JSONResponse(keys)
 
         async def metadata(_: Request) -> Response:
             return JSONResponse(self.metadata())
@@ -632,6 +672,11 @@ class AuthzServer:
                 return JSONResponse({"status": "policy_unavailable"}, status_code=503)
             if self.revocation is not None and not self.revocation.available:
                 return JSONResponse({"status": "revocation_unavailable"}, status_code=503)
+            if self.signer is not None:
+                try:
+                    await anyio.to_thread.run_sync(self.signer.public_jwks)
+                except SignerError:
+                    return JSONResponse({"status": "signer_unavailable"}, status_code=503)
             if self.state is not None:
                 try:
                     self.state.ping()
@@ -855,6 +900,23 @@ def build_parser() -> argparse.ArgumentParser:
         help="planned signing rotation interval; zero disables, minimum 60 seconds",
     )
     parser.add_argument(
+        "--dev-ephemeral-signing-key",
+        action="store_true",
+        help="development only: generate an in-memory key per process (replicas disagree, "
+        "a restart invalidates tokens); otherwise a key file or transit signer is required",
+    )
+    parser.add_argument(
+        "--transit-address",
+        help="OpenBao or Vault address for a transit signer, e.g. https://vault.example.org:8200",
+    )
+    parser.add_argument("--transit-key", help="transit key name of type ecdsa-p256")
+    parser.add_argument(
+        "--transit-token-file", type=Path, help="owner-only file holding the transit token"
+    )
+    parser.add_argument("--transit-mount", default="transit", help="transit engine mount path")
+    parser.add_argument("--transit-ca-file", type=Path, help="PEM CA bundle for the transit server")
+    parser.add_argument("--transit-namespace", help="Vault Enterprise or OpenBao namespace")
+    parser.add_argument(
         "--signing-key-file",
         type=Path,
         help="PEM P-256 private key, owner-only permissions, kept across restarts; "
@@ -889,18 +951,48 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _key_options(args: argparse.Namespace, parser: argparse.ArgumentParser) -> dict[str, Any]:
-    """AuthzServer key arguments from the key file flags; exits on unusable input."""
-    if args.verification_key_file and not args.signing_key_file:
-        parser.error("--verification-key-file needs --signing-key-file")
+    """AuthzServer key arguments: exactly one key source; exits on unusable input."""
+    sources = [
+        bool(args.signing_key_file),
+        bool(args.transit_address),
+        bool(args.dev_ephemeral_signing_key),
+    ]
+    if sum(sources) != 1:
+        parser.error(
+            "choose one key source: --signing-key-file, --transit-address "
+            "or --dev-ephemeral-signing-key"
+        )
+    if args.verification_key_file and args.dev_ephemeral_signing_key:
+        parser.error("--verification-key-file needs a persistent key source")
     if len(args.verification_key_file) > MAX_PUBLISHED_KEYS:
         parser.error(f"at most {MAX_PUBLISHED_KEYS} --verification-key-file values")
-    if args.signing_key_file is None:
+    if args.dev_ephemeral_signing_key:
+        print(json.dumps({"event": "ephemeral_signing_key"}), file=sys.stderr)
         return {}
     if args.signing_rotation_seconds != 0:
-        parser.error("--signing-key-file needs --signing-rotation-seconds 0")
+        parser.error("a persistent key source needs --signing-rotation-seconds 0")
+    try:
+        published = [load_verification_key(path) for path in args.verification_key_file]
+    except SigningKeyError as exc:
+        parser.error(str(exc))
+    if args.transit_address:
+        if not args.transit_key or not args.transit_token_file:
+            parser.error("--transit-address needs --transit-key and --transit-token-file")
+        try:
+            signer = VaultTransitSigner(
+                address=args.transit_address,
+                key_name=args.transit_key,
+                token_file=args.transit_token_file,
+                mount=args.transit_mount,
+                verify=client_context(args.transit_ca_file),
+                namespace=args.transit_namespace,
+            )
+            signer.public_jwks()
+        except (ValueError, SignerError) as exc:
+            parser.error(f"transit signer unusable: {exc}")
+        return {"signer": signer, "published_keys": published}
     try:
         key, kid = load_signing_key(args.signing_key_file)
-        published = [load_verification_key(path) for path in args.verification_key_file]
     except SigningKeyError as exc:
         parser.error(str(exc))
     return {"signing_key": key, "kid": kid, "published_keys": published}

@@ -31,6 +31,13 @@ JWT-SVID to access token bridge
 | `--token-requests-per-second` | `50` | Per-process token endpoint requests per fixed one-second window |
 | `--subject-requests-per-second` | `10` | Exchanges per authorized subject per fixed one-second window |
 | `--signing-rotation-seconds` | `3600` | Planned signing rotation interval; zero disables, minimum 60 seconds |
+| `--dev-ephemeral-signing-key` | off | Development only: generate an in-memory key per process (replicas disagree, a restart invalidates tokens); otherwise a key file or transit signer is required |
+| `--transit-address` | none | OpenBao or Vault address for a transit signer, e.g. https://vault.example.org:8200 |
+| `--transit-key` | none | Transit key name of type ecdsa-p256 |
+| `--transit-token-file` | none | Owner-only file holding the transit token |
+| `--transit-mount` | `transit` | Transit engine mount path |
+| `--transit-ca-file` | none | PEM CA bundle for the transit server |
+| `--transit-namespace` | none | Vault Enterprise or OpenBao namespace |
 | `--signing-key-file` | none | PEM P-256 private key, owner-only permissions, kept across restarts; needs --signing-rotation-seconds 0 |
 | `--verification-key-file` | `[]` | PEM public key of a previous signing key, published for overlap; repeatable |
 | `--revocation-file` | none | YAML or JSON list of blocked SPIFFE IDs (and revoked jti) refused new tokens |

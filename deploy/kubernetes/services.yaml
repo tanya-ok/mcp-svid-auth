@@ -24,6 +24,7 @@ services:
     - --port=8100
     - --svid-replay=allow-reuse-within-lifetime
     - --signing-rotation-seconds=60
+    - --dev-ephemeral-signing-key
   notes-a:
     image: mcp-svid-auth:local
     user: '1011'
@@ -47,6 +48,7 @@ services:
     - --policy=/app/deploy/policy.yaml
     - --host=0.0.0.0
     - --port=8104
+    - --dev-ephemeral-signing-key
   notes-b:
     image: mcp-svid-auth:local
     user: '1012'
