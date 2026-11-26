@@ -82,3 +82,18 @@ def test_restart_wait_retries_only_pending_key_and_requires_success(monkeypatch:
     )
     with pytest.raises(DemoError, match="tool outcome mismatch"):
         demo.wait_for_restart_key()
+
+
+@pytest.mark.parametrize(
+    ("line", "expected"),
+    [
+        ('{"schema_version":"2","record_id":"a","prev_hash":"b","decision":"allow"}', True),
+        ('{"record_id":"a","prev_hash":"b"}', True),
+        ('{"event":"token"}', False),
+        ("INFO:     10.42.0.1:1 - POST /mcp 200 OK", False),
+        ("{not json", False),
+        ("[1]", False),
+    ],
+)
+def test_audit_records_are_recognised_by_content_not_key_order(line: str, expected: bool) -> None:
+    assert demo.is_audit_record(line) is expected

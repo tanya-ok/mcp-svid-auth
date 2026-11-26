@@ -163,9 +163,20 @@ def probe(mode: str) -> dict[str, Any]:
     return rows[0]
 
 
+def is_audit_record(line: str) -> bool:
+    """Audit records are JSON objects with a record id; schema v2 no longer starts with it."""
+    if not line.startswith("{"):
+        return False
+    try:
+        parsed = json.loads(line)
+    except ValueError:
+        return False
+    return isinstance(parsed, dict) and "record_id" in parsed and "prev_hash" in parsed
+
+
 def audit_lines(service: str) -> list[str]:
     output = command(["logs", "--no-log-prefix", service])
-    return [line for line in output.splitlines() if line.startswith('{"record_id"')]
+    return [line for line in output.splitlines() if is_audit_record(line)]
 
 
 def scenarios(record: Any) -> None:  # noqa: PLR0915 - numbered demonstration

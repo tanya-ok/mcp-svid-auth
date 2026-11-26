@@ -121,8 +121,10 @@ def test_private_umask_cannot_make_public_image_code_unreadable(
             if name == lab.REPOS[0]
             else ["package.json", "pnpm-lock.yaml", "tsconfig.json"]
         )
+        if name in {"mcp-spiffe-bridge", "hipaa-fhir-mcp"}:
+            files += ["pnpm-workspace.yaml"]
         if name == "mcp-spiffe-bridge":
-            files += ["tsup.config.ts", "pnpm-workspace.yaml"]
+            files += ["tsup.config.ts"]
         for filename in files:
             (repository / filename).write_text("public fixture\n")
         if name == "hipaa-fhir-mcp":

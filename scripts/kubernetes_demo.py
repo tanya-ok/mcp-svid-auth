@@ -259,6 +259,10 @@ def build() -> dict[str, str]:
         return build_from_context(Path(staging))
 
 
+# Build inputs that newer bridge revisions need; absent in older ones, so copied only if present.
+BUILD_EXTRAS = {"mcp-spiffe-bridge": ("tsconfig.build.json", "scripts/build-cjs-types.mjs")}
+
+
 def build_from_context(context: Path) -> dict[str, str]:
     # Copy an explicit source inventory, excluding Git, local secrets and node_modules.
     for name in REPOS:
@@ -272,8 +276,16 @@ def build_from_context(context: Path) -> dict[str, str]:
         )
         if name == "mcp-spiffe-bridge":
             files += ["tsup.config.ts", "pnpm-workspace.yaml"]
+        elif name == "hipaa-fhir-mcp":
+            files += ["pnpm-workspace.yaml"]
         for filename in files:
             shutil.copyfile(source / filename, destination / filename)
+        if name == "mcp-spiffe-bridge":
+            (destination / "scripts").mkdir(exist_ok=True)
+        for filename in BUILD_EXTRAS.get(name, ()):
+            if (source / filename).is_file():
+                (destination / filename).parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(source / filename, destination / filename)
         shutil.copytree(source / "src", destination / "src", dirs_exist_ok=True)
         if name == "hipaa-fhir-mcp":
             shutil.copytree(
