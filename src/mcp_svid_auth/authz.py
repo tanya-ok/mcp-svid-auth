@@ -477,6 +477,12 @@ class AuthzServer:
             raise AuthError("invalid_dpop_proof", "DPoP proof refused", 400, str(exc)) from exc
 
     def issue(self, form: dict[str, str], dpop_proofs: list[str] | None = None) -> dict[str, Any]:
+        return self._issue(form, dpop_proofs)[0]
+
+    def _issue(
+        self, form: dict[str, str], dpop_proofs: list[str] | None = None
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        """Token response body and the issued claims (for the audit record)."""
         grant_type = form.get("grant_type")
         exchange = grant_type == TOKEN_EXCHANGE_GRANT and self.token_exchange
         if grant_type != "client_credentials" and not exchange:
@@ -508,13 +514,14 @@ class AuthzServer:
             scopes = policy.grant(spiffe_id, resource, parse_scope(form.get("scope")))
         if not self.subject_budget.take(spiffe_id):
             raise AuthError("temporarily_unavailable", "subject request budget exceeded", 429)
-        self._check_jti(spiffe_id, verified, record=True)
         if proof is not None:
+            # Record the proof first: a replayed proof must not burn a valid SVID.
             try:
                 self.proof_replay.add(proof, time.time())
             except DPoPError as exc:
                 raise AuthError("invalid_dpop_proof", "DPoP proof refused", 400, str(exc)) from exc
             extra = {**extra, "cnf": {"jkt": proof.jkt}}
+        self._check_jti(spiffe_id, verified, record=True)
         claims = {
             "iss": self.issuer,
             "sub": subject,
@@ -545,7 +552,7 @@ class AuthzServer:
         }
         if exchange:
             body["issued_token_type"] = ACCESS_TOKEN_TYPE
-        return body
+        return body, claims
 
     async def token_endpoint(self, request: Request) -> Response:
         form: dict[str, str] = {}
@@ -572,7 +579,7 @@ class AuthzServer:
             if len(form) != len(items):
                 # RFC 6749 section 3.2: request parameters MUST NOT be included more than once.
                 raise AuthError("invalid_request", "repeated request parameter")
-            body = self.issue(form, request.headers.getlist("dpop"))
+            body, issued = self._issue(form, request.headers.getlist("dpop"))
         except AuthError as exc:
             detail = f" ({exc.detail})" if exc.detail else ""
             self._audit(form, "deny", f"{exc.code}: {exc.description}{detail}")
@@ -581,7 +588,7 @@ class AuthzServer:
                 status_code=exc.status,
                 headers={**_NO_STORE, **({"Retry-After": "1"} if exc.status == 429 else {})},
             )
-        self._audit(form, "allow", f"issued for {form.get('resource')} scope={body['scope']}")
+        self._audit(form, "allow", _issued_reason(issued))
         return JSONResponse(body, headers=_NO_STORE)
 
     def _audit(self, form: dict[str, str], decision: str, reason: str) -> None:
@@ -641,6 +648,18 @@ class AuthzServer:
                 Route("/readyz", readyz, methods=["GET"]),
             ]
         )
+
+
+def _issued_reason(claims: dict[str, Any]) -> str:
+    """Allow record with what an operator needs to find and revoke the token."""
+    cnf = claims.get("cnf")
+    jkt = cnf.get("jkt") if isinstance(cnf, dict) else None
+    binding = hashlib.sha256(jkt.encode()).hexdigest()[:16] if isinstance(jkt, str) else "none"
+    actor = claims.get("act", {}).get("sub") if isinstance(claims.get("act"), dict) else None
+    return (
+        f"issued for {claims['aud']} scope={claims['scope']} jti={claims['jti']} "
+        f"exp={claims['exp']} cnf_jkt_sha256={binding}" + (f" act={actor}" if actor else "")
+    )
 
 
 def _public_jwk(key: ec.EllipticCurvePrivateKey, kid: str) -> dict[str, Any]:
