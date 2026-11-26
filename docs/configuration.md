@@ -143,6 +143,8 @@ Verify the hash chain of audit log files written with --audit-log
 | `files` | required | Audit log files, one chain each |
 | `--checkpoint` | none | Verify one complete log against a separately trusted terminal checkpoint |
 | `--write-checkpoint` | none | Create a new terminal checkpoint for one valid log; refuses to overwrite |
+| `--signing-key` | none | Ed25519 PEM private key that signs a new checkpoint; keep it away from log writers |
+| `--checkpoint-public-key` | none | Ed25519 PEM public key; the checkpoint must carry a valid signature by it |
 
 Fixed values:
 

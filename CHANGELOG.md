@@ -13,6 +13,7 @@ published as a package.
 - `--ca-file` for outbound HTTPS from the agent, stdio wrapper and MCP server (JWKS and upstream), with verification kept on.
 - Revocation file (`--revocation-file`) on the token endpoint and MCP server: revoked access token `jti` values and blocked SPIFFE IDs are refused within `--revocation-poll-seconds`; blocked IDs get no new tokens or exchanges; an unreadable or invalid file fails closed.
 - Opt-in access token `jti` tracking on the MCP server (`--max-calls-per-token`): each token authorizes at most N tool calls, bounded memory, refuses new tokens when full.
+- Ed25519 signed audit checkpoints (`--signing-key`, `--checkpoint-public-key`), so a checkpoint rebuilt or re-signed by the log writer is detected.
 - `/healthz` and `/readyz` endpoints. Readiness fails when the grant policy failed to load or the JWKS is unavailable.
 - Opt-in RFC 9449 DPoP: `--dpop-required` on the token endpoint and MCP server, `--dpop` on the agent. Bound tokens sent as Bearer are refused in every mode, and bound subject tokens are refused at token exchange. Not verified over HTTPS; the FHIR gateway stays Bearer only.
 - Opt-in RFC 8693 token exchange (`--token-exchange`): on-behalf-of access tokens with an `act` claim, scopes bounded by subject and actor, expiry bounded by the subject token, no chained delegation.

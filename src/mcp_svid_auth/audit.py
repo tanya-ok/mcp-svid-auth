@@ -13,6 +13,7 @@ terminal checkpoint detects suffix deletion and chain replacement up to that che
 from __future__ import annotations
 
 import argparse
+import base64
 import hashlib
 import json
 import sys
@@ -23,6 +24,10 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+
+from cryptography.exceptions import InvalidSignature
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey, Ed25519PublicKey
 
 Record = dict[str, Any]
 FIELDS = {
@@ -66,38 +71,63 @@ def _valid_record(record: Any) -> bool:
 
 @dataclass(frozen=True)
 class Checkpoint:
-    """Trusted terminal state, stored outside the log writer's control."""
+    """Trusted terminal state, stored outside the log writer's control.
+
+    Version 1 is unsigned. Version 2 adds an Ed25519 signature by a checkpoint key the log
+    writer never holds, so a replaced checkpoint is detected wherever it is stored.
+    """
 
     records: int
     last_record_id: str | None
     last_hash: str | None
+    key_id: str | None = None
+    signature: str | None = None
+
+    def _body(self) -> dict[str, Any]:
+        body: dict[str, Any] = {
+            "version": 2 if self.signature is not None else 1,
+            "records": self.records,
+            "last_record_id": self.last_record_id,
+            "last_hash": self.last_hash,
+        }
+        if self.signature is not None:
+            body["key_id"] = self.key_id
+        return body
+
+    def terminal(self) -> tuple[int, str | None, str | None]:
+        return self.records, self.last_record_id, self.last_hash
 
     def to_json(self) -> str:
-        return (
-            json.dumps(
-                {
-                    "version": 1,
-                    "records": self.records,
-                    "last_record_id": self.last_record_id,
-                    "last_hash": self.last_hash,
-                },
-                sort_keys=True,
-            )
-            + "\n"
-        )
+        body = self._body()
+        if self.signature is not None:
+            body["signature"] = self.signature
+        return json.dumps(body, sort_keys=True) + "\n"
+
+    def sign(self, key: Ed25519PrivateKey) -> Checkpoint:
+        key_id = public_key_id(key.public_key())
+        raw = key.sign(_signed_bytes(self, key_id))
+        signature = base64.urlsafe_b64encode(raw).rstrip(b"=").decode()
+        return Checkpoint(self.records, self.last_record_id, self.last_hash, key_id, signature)
+
+    def signature_valid(self, key: Ed25519PublicKey) -> bool:
+        if self.signature is None or self.key_id != public_key_id(key):
+            return False
+        try:
+            raw = base64.urlsafe_b64decode(self.signature + "=" * (-len(self.signature) % 4))
+            key.verify(raw, _signed_bytes(self, self.key_id))
+        except (InvalidSignature, ValueError):
+            return False
+        return True
 
     @classmethod
     def from_json(cls, text: str) -> Checkpoint:
         value = json.loads(text)
-        if not isinstance(value, dict) or set(value) != {
-            "version",
-            "records",
-            "last_record_id",
-            "last_hash",
-        }:
+        base = {"version", "records", "last_record_id", "last_hash"}
+        if not isinstance(value, dict) or set(value) not in (base, base | {"key_id", "signature"}):
             raise ValueError("invalid checkpoint")
         n, rid, digest = value["records"], value["last_record_id"], value["last_hash"]
-        if type(value["version"]) is not int or value["version"] != 1:
+        signed = "signature" in value
+        if type(value["version"]) is not int or value["version"] != (2 if signed else 1):
             raise ValueError("invalid checkpoint")
         if type(n) is not int or n < 0:
             raise ValueError("invalid checkpoint")
@@ -112,11 +142,47 @@ class Checkpoint:
             or any(c not in "0123456789abcdef" for c in digest)
         ):
             raise ValueError("invalid checkpoint")
-        return cls(n, rid, digest)
+        if not signed:
+            return cls(n, rid, digest)
+        key_id, signature = value["key_id"], value["signature"]
+        if not isinstance(key_id, str) or not isinstance(signature, str) or not signature:
+            raise ValueError("invalid checkpoint")
+        return cls(n, rid, digest, key_id, signature)
+
+
+def _signed_bytes(checkpoint: Checkpoint, key_id: str | None) -> bytes:
+    """Domain-separated JCS bytes of the terminal state and key identifier."""
+    body = {
+        "version": 2,
+        "records": checkpoint.records,
+        "last_record_id": checkpoint.last_record_id,
+        "last_hash": checkpoint.last_hash,
+        "key_id": key_id,
+    }
+    return b"mcp-svid-auth audit checkpoint\n" + canonical(body)
+
+
+def public_key_id(key: Ed25519PublicKey) -> str:
+    raw = key.public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
+    return "sha256:" + hashlib.sha256(raw).hexdigest()[:32]
+
+
+def load_signing_key(path: Path) -> Ed25519PrivateKey:
+    key = serialization.load_pem_private_key(path.read_bytes(), password=None)
+    if not isinstance(key, Ed25519PrivateKey):
+        raise ValueError("checkpoint signing key must be Ed25519")
+    return key
+
+
+def load_public_key(path: Path) -> Ed25519PublicKey:
+    key = serialization.load_pem_public_key(path.read_bytes())
+    if not isinstance(key, Ed25519PublicKey):
+        raise ValueError("checkpoint public key must be Ed25519")
+    return key
 
 
 def canonical(record: Record) -> bytes:
-    """RFC 8785 (JCS) serialization for the value types audit records use: strings and null."""
+    """RFC 8785 (JCS) serialization for audit values: strings, null and small integers."""
     return json.dumps(
         record, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False
     ).encode("utf-8")
@@ -228,7 +294,7 @@ def verify_lines(
             previous["record_id"] if previous else None,
             record_hash(previous) if previous else None,
         )
-        if terminal != checkpoint:
+        if terminal.terminal() != checkpoint.terminal():
             problems.append("terminal state does not match trusted checkpoint")
     return count, problems
 
@@ -261,7 +327,33 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         help="create a new terminal checkpoint for one valid log; refuses to overwrite",
     )
+    parser.add_argument(
+        "--signing-key",
+        type=Path,
+        help="Ed25519 PEM private key that signs a new checkpoint; keep it away from log writers",
+    )
+    parser.add_argument(
+        "--checkpoint-public-key",
+        type=Path,
+        help="Ed25519 PEM public key; the checkpoint must carry a valid signature by it",
+    )
     return parser
+
+
+def _read_checkpoint(path: Path | None, public_key_path: Path | None) -> Checkpoint | None:
+    """Load the trusted checkpoint; with a public key its signature must verify. Exits on error."""
+    if path is None:
+        return None
+    try:
+        checkpoint = Checkpoint.from_json(path.read_text(encoding="utf-8"))
+        public_key = load_public_key(public_key_path) if public_key_path else None
+    except (OSError, ValueError, TypeError):
+        print("checkpoint or its public key cannot be read or is invalid")
+        sys.exit(1)
+    if public_key is not None and not checkpoint.signature_valid(public_key):
+        print("checkpoint signature is missing or invalid")
+        sys.exit(1)
+    return checkpoint
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -269,13 +361,16 @@ def main(argv: list[str] | None = None) -> None:
     args = parser.parse_args(argv)
     if (args.checkpoint or args.write_checkpoint) and len(args.files) != 1:
         parser.error("a checkpoint requires exactly one log file")
-    checkpoint = None
-    if args.checkpoint:
-        try:
-            checkpoint = Checkpoint.from_json(args.checkpoint.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            print("checkpoint cannot be read or is invalid")
-            sys.exit(1)
+    if args.signing_key and not args.write_checkpoint:
+        parser.error("--signing-key needs --write-checkpoint")
+    if args.checkpoint_public_key and not args.checkpoint:
+        parser.error("--checkpoint-public-key needs --checkpoint")
+    checkpoint = _read_checkpoint(args.checkpoint, args.checkpoint_public_key)
+    try:
+        signing_key = load_signing_key(args.signing_key) if args.signing_key else None
+    except (OSError, ValueError, TypeError):
+        print("checkpoint signing key cannot be read or is not Ed25519")
+        sys.exit(1)
     failed = False
     for path in args.files:
         try:
@@ -288,7 +383,10 @@ def main(argv: list[str] | None = None) -> None:
         if args.write_checkpoint and not problems:
             try:
                 with args.write_checkpoint.open("x", encoding="utf-8") as output:
-                    output.write(create_checkpoint(lines).to_json())
+                    created = create_checkpoint(lines)
+                    if signing_key is not None:
+                        created = created.sign(signing_key)
+                    output.write(created.to_json())
             except OSError:
                 problems.append(
                     "checkpoint cannot be created; existing files are never overwritten"

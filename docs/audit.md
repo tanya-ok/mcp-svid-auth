@@ -8,8 +8,11 @@ Each authz and tool decision is one JSON record with a random ID, previous ID an
 |---|---|---|
 | Internal links only | Edited linked records, middle deletion, head deletion, reordering and malformed records | Last-record edits, suffix deletion, or a consistently rebuilt chain |
 | Links plus a separately trusted terminal checkpoint | Those attacks plus changed terminal record, suffix deletion, or chain replacement up to the checkpoint | Events never logged, events after the checkpoint, a dishonest writer, or a checkpoint the attacker can also replace |
+| Links plus a signed checkpoint verified with `--checkpoint-public-key` | Those attacks plus a replaced or rebuilt checkpoint, wherever it is stored | Events never logged, events after the checkpoint, a dishonest writer, or a stolen checkpoint signing key |
 
-A checkpoint contains the format version, record count, last record ID and last record hash. It is not a signature. Its security comes from independently protected storage and a trusted capture process.
+An unsigned checkpoint (version 1) contains the format version, record count, last record ID and last record hash. Its security comes from independently protected storage and a trusted capture process.
+
+A signed checkpoint (version 2) adds `key_id` and an Ed25519 `signature` over the domain-separated JCS form of those fields. The signing key belongs to the operator who captures checkpoints; the authz and MCP processes never need it. Only the public key is required to verify, so the checkpoint itself may live beside the log.
 
 ## Capture and verify
 
@@ -21,11 +24,16 @@ mcp-svid-audit-verify notes-a.jsonl --write-checkpoint notes-a.checkpoint.json
 
 The command refuses an invalid chain and never overwrites an existing checkpoint. Put the checkpoint under a separate operator's control, for example an offline retained copy or storage where the workload has no write access. Creating it beside the log is useful for a demo but supplies no independent trust.
 
+To sign it, create an Ed25519 key outside the workload, for example `openssl genpkey -algorithm ed25519 -out checkpoint.key` and `openssl pkey -in checkpoint.key -pubout -out checkpoint.pub`, then add `--signing-key checkpoint.key` to the command above. Verification with `--checkpoint-public-key checkpoint.pub` refuses an unsigned checkpoint, one signed by another key, and any change to its fields.
+
 Verify the exact captured log against that retained baseline:
 
 ```sh
 mcp-svid-audit-verify notes-a.jsonl --checkpoint /trusted/notes-a.checkpoint.json
+mcp-svid-audit-verify notes-a.jsonl --checkpoint notes-a.checkpoint.json --checkpoint-public-key checkpoint.pub
 ```
+
+Without `--checkpoint-public-key` a signed checkpoint is compared by terminal state only, exactly like an unsigned one.
 
 This compares the exact terminal state. A log with additional records also differs: freeze the captured interval or establish a new trusted checkpoint for the new interval. Never regenerate a baseline from a suspect log to make verification pass.
 
