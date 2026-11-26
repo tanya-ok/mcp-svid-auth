@@ -8,7 +8,6 @@ same identifier. Previous public keys can be published for overlap during a plan
 from __future__ import annotations
 
 import json
-import stat
 from pathlib import Path
 from typing import Any
 
@@ -17,6 +16,7 @@ from cryptography.hazmat.primitives.asymmetric import ec
 from jwt.algorithms import ECAlgorithm
 
 from mcp_svid_auth.dpop import jwk_thumbprint
+from mcp_svid_auth.files import MAX_KEY_FILE_BYTES, UnsafeFileError, read_file
 
 MAX_PUBLISHED_KEYS = 4
 
@@ -35,14 +35,11 @@ def key_id(key: ec.EllipticCurvePublicKey) -> str:
 
 
 def load_signing_key(path: Path) -> tuple[ec.EllipticCurvePrivateKey, str]:
-    """Load a P-256 private key; refuse a file that group or others can read or write."""
+    """Load a P-256 private key from an owner-only regular file (one descriptor, no symlink)."""
     try:
-        mode = path.stat().st_mode
-        data = path.read_bytes()
-    except OSError as exc:
-        raise SigningKeyError("signing key file cannot be read") from exc
-    if mode & (stat.S_IRWXG | stat.S_IRWXO):
-        raise SigningKeyError("signing key file must not be accessible to group or others")
+        data = read_file(path, max_bytes=MAX_KEY_FILE_BYTES, private=True)
+    except UnsafeFileError as exc:
+        raise SigningKeyError(f"signing key file unusable: {exc}") from exc
     try:
         key = serialization.load_pem_private_key(data, password=None)
     except (ValueError, TypeError) as exc:
@@ -55,8 +52,12 @@ def load_signing_key(path: Path) -> tuple[ec.EllipticCurvePrivateKey, str]:
 def load_verification_key(path: Path) -> dict[str, Any]:
     """A previous P-256 public key as a JWK for publication during rotation overlap."""
     try:
-        key = serialization.load_pem_public_key(path.read_bytes())
-    except (OSError, ValueError, TypeError) as exc:
+        data = read_file(path, max_bytes=MAX_KEY_FILE_BYTES)
+    except UnsafeFileError as exc:
+        raise SigningKeyError(f"verification key file unusable: {exc}") from exc
+    try:
+        key = serialization.load_pem_public_key(data)
+    except (ValueError, TypeError) as exc:
         raise SigningKeyError("verification key file is not a PEM public key") from exc
     if not isinstance(key, ec.EllipticCurvePublicKey) or not isinstance(key.curve, ec.SECP256R1):
         raise SigningKeyError("verification key must be EC P-256")

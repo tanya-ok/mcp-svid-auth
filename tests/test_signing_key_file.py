@@ -10,6 +10,7 @@ import jwt
 import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ec
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from mcp_svid_auth import authz
 from mcp_svid_auth.audit import AuditLog
@@ -131,7 +132,7 @@ def test_wrong_curve_or_garbage_is_refused(tmp_path: Path) -> None:
     garbage.chmod(0o600)
     with pytest.raises(SigningKeyError, match="PEM"):
         load_signing_key(garbage)
-    with pytest.raises(SigningKeyError, match="cannot be read"):
+    with pytest.raises(SigningKeyError, match="cannot be opened"):
         load_signing_key(tmp_path / "missing.key")
 
 
@@ -170,3 +171,38 @@ def test_cli_loads_keys(tmp_path: Path) -> None:
     assert [k["kid"] for k in options["published_keys"]] == [
         load_verification_key(old_public)["kid"]
     ]
+
+
+def test_every_key_loader_refuses_symlinks_and_foreign_owners(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from mcp_svid_auth import audit  # noqa: PLC0415
+
+    private, public = _key_file(tmp_path, "active")
+    ed_key = tmp_path / "checkpoint.key"
+    ed_key.write_bytes(
+        Ed25519PrivateKey.generate().private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.PKCS8,
+            serialization.NoEncryption(),
+        )
+    )
+    ed_key.chmod(0o644)
+    with pytest.raises(ValueError, match="group or others"):
+        audit.load_signing_key(ed_key)
+    ed_key.chmod(0o600)
+    assert audit.load_signing_key(ed_key)
+    for target, loader in (
+        (private, load_signing_key),
+        (public, load_verification_key),
+        (ed_key, audit.load_signing_key),
+    ):
+        link = tmp_path / f"link-{target.name}"
+        link.symlink_to(target)
+        with pytest.raises(ValueError, match="cannot be opened"):
+            loader(link)
+    real_uid = os.getuid()
+    monkeypatch.setattr(os, "getuid", lambda: real_uid + 1)
+    for target, loader in ((private, load_signing_key), (ed_key, audit.load_signing_key)):
+        with pytest.raises(ValueError, match="owned by the service user"):
+            loader(target)

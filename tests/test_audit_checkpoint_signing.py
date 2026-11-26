@@ -31,6 +31,7 @@ def _keys(directory: Path, label: str) -> tuple[Path, Path]:
             serialization.NoEncryption(),
         )
     )
+    private.chmod(0o600)
     public = directory / f"{label}.pub"
     public.write_bytes(
         key.public_key().public_bytes(

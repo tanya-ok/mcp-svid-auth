@@ -29,6 +29,8 @@ from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey, Ed25519PublicKey
 
+from mcp_svid_auth.files import MAX_KEY_FILE_BYTES, read_file
+
 Record = dict[str, Any]
 FIELDS = {
     "record_id",
@@ -168,14 +170,15 @@ def public_key_id(key: Ed25519PublicKey) -> str:
 
 
 def load_signing_key(path: Path) -> Ed25519PrivateKey:
-    key = serialization.load_pem_private_key(path.read_bytes(), password=None)
+    data = read_file(path, max_bytes=MAX_KEY_FILE_BYTES, private=True)
+    key = serialization.load_pem_private_key(data, password=None)
     if not isinstance(key, Ed25519PrivateKey):
         raise ValueError("checkpoint signing key must be Ed25519")
     return key
 
 
 def load_public_key(path: Path) -> Ed25519PublicKey:
-    key = serialization.load_pem_public_key(path.read_bytes())
+    key = serialization.load_pem_public_key(read_file(path, max_bytes=MAX_KEY_FILE_BYTES))
     if not isinstance(key, Ed25519PublicKey):
         raise ValueError("checkpoint public key must be Ed25519")
     return key

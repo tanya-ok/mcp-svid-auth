@@ -43,6 +43,7 @@ published as a package.
 
 ### Security
 
+- Signing, verification and checkpoint key files are opened once without following symlinks and checked on the descriptor: regular file, size cap, and for private keys owner-only permissions owned by the service user.
 - Revocation files are read once per load with O_NOFOLLOW, a regular-file check and a size cap, so parsed content and digest always match and symlinks, FIFOs or huge files fail closed. Empty or partial files are refused instead of meaning "revoke nothing". Optional detached Ed25519 signature (`--revocation-public-key`). `--revocation-poll-seconds` is limited to 0.5 to 300. The in-process token use store has a per-subject quota.
 - Raised PyJWT to 2.15 (spiffe to 0.3.2) for published advisories.
 - A JWKS with malformed keys now denies the token with audit reason `jwks_invalid` instead of an unhandled error.
