@@ -34,6 +34,13 @@ flowchart LR
 | `policy` | none | Allowlist of SPIFFE ID, resource and scopes. |
 | `audit` | `mcp-svid-audit-verify` | One hash-chained JSON line per decision, to a file or stderr, and the chain verifier. |
 | `spiffe_keys` | none | JWT-SVID source and key resolver: Workload API, or a static JWKS for tests. |
+| `tls` | none | HTTPS and mTLS listener flags, private CA for outbound clients. |
+| `state` | none | Replay and rate-limit state shared through Valkey or Redis, fail closed. |
+| `revocation` | none | Revocation file (`jti`, SPIFFE IDs) and per-token call limits. |
+| `signing_keys`, `signers` | none | Persistent signing key file; transit signer behind the `Signer` seam. |
+| `metrics` | none | Prometheus text from audit decisions and dependency gauges. |
+| `files` | none | Descriptor-based, size-capped, no-follow reads of key and config files. |
+| `dpop` | none | RFC 9449 proofs, proof verification and replay store. |
 | `deploy/` | `make demo` | SPIRE server and agent 1.15.3, registration entries, the services, eighteen asserted scenarios. |
 
 ## Upstream calls without token passthrough
@@ -113,32 +120,34 @@ JWT, header `typ` `at+jwt`, `alg` ES256, `kid` of the authz signing key.
 | `iat`, `exp` | issue time, issue time + 300s |
 | `jti` | random hex |
 
-The authz signing keys are P-256 keys generated in memory. Planned in-process rotation publishes the next public key before use and retains previous verification keys until their tokens expire. Keys do not survive a restart. See [rotation and request budgets](auth-cost-rotation.md).
+The signing key comes from one of three sources: `--signing-key-file` (a P-256 key whose `kid` is its RFC 7638 thumbprint, shared by replicas), an OpenBao or Vault transit key (`--transit-address`, the private key never leaves the engine), or `--dev-ephemeral-signing-key`, an in-memory key with planned in-process rotation for the lab ([rotation and request budgets](auth-cost-rotation.md)). See [operations](operations.md).
 
 ## Audit log
 
 Every allow and deny decision in authz and the MCP servers is one JSON line:
 
 ```json
-{"record_id":"5f0c9a53-2a8e-4d0b-9a57-0f3e2f6d1c44","parent_record_id":"b1d7e0a2-6c1f-4e89-8f0e-2d4c7a9b3e51","prev_hash":"3b9f0c2e8d7a41f6b5e0c9d8a7f6e5d4c3b2a1908f7e6d5c4b3a29180f7e6d5c","timestamp":"2026-09-26T18:07:11.742+00:00","component":"mcp_server:notes-b","spiffe_id":"spiffe://example.org/agent/research","tool":"notes.write","decision":"deny","reason":"insufficient_scope: needs notes:write"}
+{"schema_version":"2","record_id":"5f0c9a53-2a8e-4d0b-9a57-0f3e2f6d1c44","parent_record_id":"b1d7e0a2-6c1f-4e89-8f0e-2d4c7a9b3e51","prev_hash":"3b9f0c2e8d7a41f6b5e0c9d8a7f6e5d4c3b2a1908f7e6d5c4b3a29180f7e6d5c","timestamp":"2026-09-26T18:07:11.742+00:00","component":"mcp_server:notes-b","replica_id":"notes-b-0","spiffe_id":"spiffe://example.org/agent/research","tool":"notes.write","decision":"deny","reason":"insufficient_scope: needs notes:write"}
 ```
 
 | Field | Content |
 |---|---|
+| `schema_version` | `"2"`; absent in version 1 records |
 | `record_id` | random UUIDv4 |
 | `parent_record_id` | `record_id` of the previous line in the same file, `null` for the first |
 | `prev_hash` | SHA-256, lowercase hex, of the previous line in RFC 8785 (JCS) form, `null` for the first |
 | `component` | `authz` or `mcp_server:<name>` |
+| `replica_id` | writer instance, `--audit-replica-id` or `HOSTNAME` |
 | `spiffe_id` | caller, prefixed with `unverified:` when the decision was made before the signature check, `null` when unknown |
 | `tool` | tool name for `tools/call`, else `null` |
 | `decision` | `allow`, `deny`, or `policy_reload` (authz only) |
-| `reason` | Fixed description or exception class name; hashed SVID ID for correlation |
+| `reason` | Fixed description or exception class name; hashed SVID ID for correlation; for issued tokens the `jti`, audience and expiry. Full vocabulary: [audit event contract](architecture/contracts/audit-event.md) |
 
 Without `--audit-log` the lines go to stderr.
 
 ### Hash chain
 
-Each file is one chain, built as in [draft-sharif-agent-audit-trail-05](https://datatracker.ietf.org/doc/draft-sharif-agent-audit-trail/) (checked 2026-09-27): `prev_hash(N) = hex(SHA-256(JCS(record N-1)))`, and `parent_record_id` links to the previous `record_id`. The field set is this project's own, not the full AAT record. A process that opens an existing file validates the whole chain before continuing it, and refuses every write while the chain is invalid or its last line lacks a trailing newline. One writer per file.
+Each file is one chain, built as in [draft-sharif-agent-audit-trail-05](https://datatracker.ietf.org/doc/draft-sharif-agent-audit-trail/) (checked 2026-09-27): `prev_hash(N) = hex(SHA-256(JCS(record N-1)))`, and `parent_record_id` links to the previous `record_id`. The field set is this project's own, not the full AAT record. A process that opens an existing file validates the links in its last 1 MiB before continuing it, and refuses every write while they are invalid or the last line lacks a trailing newline. One writer per file, enforced by an exclusive lock on `<file>.lock`; each replica writes its own file. Every record is fsynced.
 
 ```sh
 mcp-svid-audit-verify authz.jsonl notes-a.jsonl
@@ -146,7 +155,7 @@ mcp-svid-audit-verify authz.jsonl notes-a.jsonl
 
 The verifier recomputes every link and reports edited, deleted, reordered or inserted lines and timestamps that go backwards. Exit code 0 means every chain is intact. Without `--checkpoint`, deleting lines from the end of a file (tail truncation) is not detected, because the links have no anchor for the last record.
 
-The chain is tamper-evident, not tamper-proof: anyone who can write the file can rewrite the whole chain from the edited line on. A terminal checkpoint is implemented; storing it independently is the operator's responsibility. Signatures and managed external storage are not implemented. See [Audit integrity](audit.md).
+The chain is tamper-evident, not tamper-proof: anyone who can write the file can rewrite the whole chain from the edited line on. Terminal checkpoints, optionally Ed25519 signed and chained by sequence, anchor the end; keeping the signing key away from the writer and storing logs durably are the operator's responsibility. See [Audit integrity](audit.md).
 
 ## Human sign-in with ZITADEL
 
