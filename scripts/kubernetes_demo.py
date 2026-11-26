@@ -29,12 +29,22 @@ ROOT = Path(__file__).resolve().parent.parent
 DEPLOY = ROOT / "deploy"
 CONFIG = DEPLOY / "kubernetes"
 DATA = DEPLOY / ".data"
-VM = "security-lab"
+VM = os.environ.get("LAB_VM", "security-lab")
+if not re.fullmatch(r"[a-z][a-z0-9-]{0,62}", VM):
+    raise ValueError("LAB_VM must be a lowercase Lima instance name")
 NAMESPACE = "security-lab"
 OWNER = {"app.kubernetes.io/part-of": "security-lab"}
 SOCKET = "/run/spire/security-lab"
 IMAGES_FILE = DATA / "kubernetes-images.json"
 REPOS = ("mcp-svid-auth", "mcp-spiffe-bridge", "hipaa-fhir-mcp")
+
+
+def repo_path(name: str) -> Path:
+    """Checkout of one lab repository; SVID_LAB_REPO_<NAME> overrides the sibling default."""
+    override = os.environ.get("SVID_LAB_REPO_" + name.upper().replace("-", "_"))
+    if override:
+        return Path(override).resolve()
+    return ROOT if name == REPOS[0] else ROOT.parent / name
 
 
 def lima(
@@ -141,10 +151,8 @@ def runtime_up() -> None:
         if ISOLATED:
             raise DemoRuntimeError("Isolated identity requires the existing shared lab VM")
         config = yaml.safe_load((DEPLOY / "lima-kubernetes.yaml").read_text())
-        config["mounts"] = [
-            {"location": str(ROOT.parent / name), "writable": False} for name in REPOS
-        ]
-        if not all((ROOT.parent / name / "package.json").is_file() for name in REPOS[1:]):
+        config["mounts"] = [{"location": str(repo_path(name)), "writable": False} for name in REPOS]
+        if not all((repo_path(name) / "package.json").is_file() for name in REPOS[1:]):
             raise DemoRuntimeError("sibling security repositories are required")
         DATA.mkdir(exist_ok=True)
         profile = DATA / "lima-kubernetes.yaml"
@@ -161,8 +169,7 @@ def verify_instance() -> None:
         raise DemoRuntimeError("dedicated VM is absent; run make runtime-up")
     config = instance["config"]
     mounts = config.get("mounts", [])
-    mount_root = Path(os.environ.get("SVID_LAB_MOUNT_ROOT", str(ROOT))).resolve()
-    expected = {str(mount_root.parent / name) for name in REPOS}
+    expected = {str(repo_path(name)) for name in REPOS}
     if {mount["location"] for mount in mounts} != expected or any(
         mount.get("writable") for mount in mounts
     ):
@@ -246,7 +253,7 @@ def build_image(name: str, context: Path, file: Path) -> str:
 def build() -> dict[str, str]:
     DATA.mkdir(exist_ok=True)
     # Stage integration sources outside the clean-room authorization repository.
-    staging_root = ROOT.parent / "hipaa-fhir-mcp" / "deploy" / ".data"
+    staging_root = repo_path("hipaa-fhir-mcp") / "deploy" / ".data"
     staging_root.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="kubernetes-build-", dir=staging_root) as staging:
         return build_from_context(Path(staging))
@@ -257,7 +264,7 @@ def build_from_context(context: Path) -> dict[str, str]:
     for name in REPOS:
         destination = context / name
         destination.mkdir(exist_ok=True)
-        source = ROOT.parent / name
+        source = repo_path(name)
         files = (
             ["package.json", "pnpm-lock.yaml", "tsconfig.json"]
             if name != REPOS[0]

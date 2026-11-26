@@ -332,7 +332,7 @@ def test_forwarding_must_also_ignore_loopback_listeners(
     config = yaml.safe_load((lab.DEPLOY / "lima-kubernetes.yaml").read_text())
     assert config["portForwards"][0]["guestIPMustBeZero"] is False
     config["mounts"] = [
-        {"location": str(lab.ROOT.parent / name), "writable": False} for name in lab.REPOS
+        {"location": str(lab.repo_path(name)), "writable": False} for name in lab.REPOS
     ]
     config["portForwards"][0]["guestIPMustBeZero"] = flag
     instance = {"name": lab.VM, "cpus": 2, "memory": 4 * 1024**3, "config": config}

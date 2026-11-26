@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from pathlib import Path
@@ -221,8 +220,7 @@ def service_rows(observations: dict[str, dict[str, Any]]) -> list[dict[str, Any]
 def snapshot() -> dict[str, Any]:
     evidence = lab.DATA
     if ISOLATED:
-        source = Path(os.environ.get("SVID_LAB_MOUNT_ROOT", str(lab.ROOT))).resolve()
-        evidence = source / "deploy" / ".data"
+        evidence = lab.repo_path(lab.REPOS[0]) / "deploy" / ".data"
     namespaces = ["security-lab", "spire-system"]
     if PROFILE.exists():
         if not lab.owned_namespace(IDENTITY_NAMESPACE):

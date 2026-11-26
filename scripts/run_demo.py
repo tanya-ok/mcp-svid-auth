@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from mcp_svid_auth.audit import create_checkpoint, verify_lines
-from scripts.kubernetes_demo import compose_command
+from scripts.kubernetes_demo import compose_command, repo_path
 from scripts.lab_runtime import DemoRuntimeError
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -354,7 +354,7 @@ def scenarios(record: Any) -> None:  # noqa: PLR0915 - numbered demonstration
     audit_probe = subprocess.run(  # noqa: S603 - explicit local script, no shell
         [
             sys.executable,
-            str(ROOT.parent / "hipaa-fhir-mcp/deploy/kubernetes/probe_fhir.py"),
+            str(repo_path("hipaa-fhir-mcp") / "deploy/kubernetes/probe_fhir.py"),
             "audit",
         ],
         input=output,
