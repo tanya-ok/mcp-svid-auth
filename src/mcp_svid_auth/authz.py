@@ -38,6 +38,8 @@ from mcp_svid_auth.audit import AuditLog, default_replica_id
 from mcp_svid_auth.budgets import WindowBudget
 from mcp_svid_auth.dpop import DPOP_ALG, DPoPError, ProofReplayStore, VerifiedProof, verify_proof
 from mcp_svid_auth.errors import AuthError
+from mcp_svid_auth.metrics import CONTENT_TYPE as METRICS_CONTENT_TYPE
+from mcp_svid_auth.metrics import Metrics, succeeds
 from mcp_svid_auth.policy import Policy
 from mcp_svid_auth.revocation import (
     DEFAULT_REVOCATION_POLL_SECONDS,
@@ -208,6 +210,7 @@ class AuthzServer:
     published_keys: list[dict[str, Any]] = field(default_factory=list)
     state: SharedState | None = None
     signer: Signer | None = None
+    metrics: Metrics | None = None
     _policy_digest: str | None = None
     _reload_lock: threading.Lock = field(default_factory=threading.Lock)
 
@@ -625,6 +628,21 @@ class AuthzServer:
         self._audit(form, "allow", _issued_reason(issued))
         return JSONResponse(body, headers=_NO_STORE)
 
+    def _register_gauges(self, metrics: Metrics) -> None:
+        if self.state is not None:
+            state = self.state
+            metrics.gauge("state_store", succeeds(state.ping))
+        if self.revocation is not None:
+            revocation = self.revocation
+            metrics.gauge("revocation", lambda: float(revocation.available))
+        if self.signer is not None:
+            signer = self.signer
+            metrics.gauge("signer", succeeds(signer.public_jwks))
+        check = getattr(self.resolver, "check", None)
+        if check is not None:
+            metrics.gauge("trust_bundle", succeeds(lambda: check(self.policy.trust_domain)))
+        metrics.gauge("policy", lambda: float(bool(self.policy.grants)))
+
     def _audit(self, form: dict[str, str], decision: str, reason: str) -> None:
         spiffe_id: str | None = None
         try:
@@ -690,8 +708,19 @@ class AuthzServer:
                     return JSONResponse({"status": "state_store_unavailable"}, status_code=503)
             return JSONResponse({"status": "ok"})
 
+        routes = []
+        if self.metrics is not None:
+            metrics = self.metrics
+            self._register_gauges(metrics)
+
+            async def metrics_endpoint(_: Request) -> Response:
+                text = await anyio.to_thread.run_sync(metrics.render)
+                return Response(text, media_type=METRICS_CONTENT_TYPE)
+
+            routes.append(Route("/metrics", metrics_endpoint, methods=["GET"]))
         return Starlette(
             routes=[
+                *routes,
                 Route("/token", self.token_endpoint, methods=["POST"]),
                 Route("/jwks.json", jwks, methods=["GET"]),
                 Route("/.well-known/oauth-authorization-server", metadata, methods=["GET"]),
@@ -953,6 +982,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     add_tls_server_flags(parser)
     add_state_flags(parser)
+    parser.add_argument(
+        "--metrics",
+        action="store_true",
+        help="serve Prometheus text metrics on /metrics (bounded labels, no identifiers)",
+    )
     return parser
 
 
@@ -1039,6 +1073,7 @@ def main(argv: list[str] | None = None) -> None:
         ),
         proof_replay=ProofReplayStore(shared=state),
         state=state,
+        metrics=Metrics() if args.metrics else None,
         signing_rotation_seconds=args.signing_rotation_seconds,
         **keys,
         token_exchange=args.token_exchange,
@@ -1054,6 +1089,7 @@ def main(argv: list[str] | None = None) -> None:
             else None
         ),
     )
+    server.audit.metrics = server.metrics
     install_policy_reload(server, args.policy_poll_seconds)
     uvicorn.run(server.app(), host=args.host, port=args.port, **tls)
 

@@ -52,6 +52,7 @@ JWT-SVID to access token bridge
 | `--state-store-cert` | none | PEM client certificate for store mTLS |
 | `--state-store-key` | none | PEM key for --state-store-cert |
 | `--state-store-prefix` | `mcp-svid-auth` | Key prefix; replicas of one deployment must use the same value |
+| `--metrics` | off | Serve Prometheus text metrics on /metrics (bounded labels, no identifiers) |
 
 Fixed values:
 
@@ -102,6 +103,7 @@ Notes MCP server (reference resource server)
 | `--state-store-cert` | none | PEM client certificate for store mTLS |
 | `--state-store-key` | none | PEM key for --state-store-cert |
 | `--state-store-prefix` | `mcp-svid-auth` | Key prefix; replicas of one deployment must use the same value |
+| `--metrics` | off | Serve Prometheus text metrics on /metrics (bounded labels, no identifiers) |
 
 Fixed values:
 

@@ -70,6 +70,8 @@ from mcp_svid_auth.agent_client import (
 from mcp_svid_auth.audit import AuditLog, default_replica_id
 from mcp_svid_auth.budgets import WindowBudget
 from mcp_svid_auth.dpop import DPOP_ALG, DPoPError, ProofReplayStore, verify_proof
+from mcp_svid_auth.metrics import CONTENT_TYPE as METRICS_CONTENT_TYPE
+from mcp_svid_auth.metrics import Metrics, succeeds
 from mcp_svid_auth.revocation import (
     DEFAULT_REVOCATION_POLL_SECONDS,
     DEFAULT_TOKEN_USE_CACHE_SIZE,
@@ -99,7 +101,7 @@ MAX_ACCESS_TOKEN_BYTES = 8192
 MAX_JWKS_BYTES = 65_536
 MAX_JWKS_KEYS = 16
 DEFAULT_TOKEN_VERIFICATIONS_PER_SECOND = 256
-HEALTH_PATHS = ("/healthz", "/readyz")
+HEALTH_PATHS = ("/healthz", "/readyz", "/metrics")
 
 
 class JwksUnavailableError(Exception):
@@ -858,6 +860,7 @@ def create_app(  # noqa: PLR0913
     revocation: RevocationList | None = None,
     token_uses: TokenUseCounter | None = None,
     state: SharedState | None = None,
+    metrics: Metrics | None = None,
 ) -> Starlette:
     resource = resource.rstrip("/")
     mcp, tool_scopes = build_mcp(name, store or NotesStore(), upstream)
@@ -941,6 +944,24 @@ def create_app(  # noqa: PLR0913
             return JSONResponse({"status": "degraded", "jwks": "stale"})
         return JSONResponse({"status": "ok"})
 
+    async def metrics_endpoint(_: Request) -> Response:
+        if metrics is None:
+            return Response(status_code=404)
+        try:
+            await source.get()
+            jwks_up = 0.0 if getattr(source, "degraded", False) else 1.0
+        except (JwksUnavailableError, JwksInvalidError):
+            jwks_up = 0.0
+        text = await anyio.to_thread.run_sync(metrics.render, [("jwks", jwks_up)])
+        return Response(text, media_type=METRICS_CONTENT_TYPE)
+
+    if metrics is not None:
+        audit.metrics = metrics
+        if state is not None:
+            metrics.gauge("state_store", succeeds(state.ping))
+        if revocation is not None:
+            metrics.gauge("revocation", lambda: float(revocation.available))
+
     prm_path = urlsplit(metadata_url).path
     if path in HEALTH_PATHS:
         raise ValueError("resource path collides with a health endpoint")
@@ -949,6 +970,7 @@ def create_app(  # noqa: PLR0913
         Route(prm_path, endpoint=protected_resource_metadata, methods=["GET"]),
         Route("/healthz", endpoint=healthz, methods=["GET"]),
         Route("/readyz", endpoint=readyz, methods=["GET"]),
+        *([Route("/metrics", endpoint=metrics_endpoint, methods=["GET"])] if metrics else []),
     ]
     return Starlette(
         routes=routes,
@@ -1039,6 +1061,11 @@ def build_parser() -> argparse.ArgumentParser:
     add_url_flags(parser)
     add_tls_server_flags(parser)
     add_state_flags(parser)
+    parser.add_argument(
+        "--metrics",
+        action="store_true",
+        help="serve Prometheus text metrics on /metrics (bounded labels, no identifiers)",
+    )
     return parser
 
 
@@ -1082,6 +1109,7 @@ def main(argv: list[str] | None = None) -> None:
         upstream=upstream,
         dpop_required=args.dpop_required,
         state=state,
+        metrics=Metrics() if args.metrics else None,
         revocation=(
             RevocationList.load(
                 args.revocation_file,

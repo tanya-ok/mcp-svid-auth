@@ -269,6 +269,8 @@ class AuditLog:
     component: str = "mcp_server"
     replica_id: str = field(default_factory=default_replica_id)
     fsync: bool = True
+    # Optional mcp_svid_auth.metrics.Metrics; counts each decision after it is written.
+    metrics: Any = None
     _lock: threading.Lock = field(default_factory=threading.Lock)
     _last: Record | None = None
     _loaded: bool = False
@@ -303,6 +305,8 @@ class AuditLog:
                     if self.fsync:
                         os.fsync(fh.fileno())
             self._last = entry
+        if self.metrics is not None:
+            self.metrics.record(self.component, decision, reason)
         return entry
 
     def close(self) -> None:
