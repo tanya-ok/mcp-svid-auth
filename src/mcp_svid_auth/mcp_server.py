@@ -761,8 +761,10 @@ class Upstream:
     _expires_at: float = 0.0
     _lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
-    async def token(self) -> str:
+    async def token(self, *, discard: str | None = None) -> str:
         async with self._lock:
+            if discard is not None and self._token == discard:
+                self._token = None
             if self._token is None or time.time() >= self._expires_at - self.refresh_margin:
                 body = await fetch_access_token(
                     self.resource,
@@ -776,11 +778,7 @@ class Upstream:
                 self._expires_at = time.time() + int(body["expires_in"])
             return self._token
 
-    async def search(self, query: str) -> str:
-        try:
-            token = await self.token()
-        except TokenRequestError:
-            raise ToolError("upstream credential unavailable") from None
+    async def _call(self, token: str, query: str) -> str:
         return await call_tool(
             self.resource,
             token,
@@ -789,6 +787,19 @@ class Upstream:
             http=self.http,
             url_policy=self.url_policy,
         )
+
+    async def search(self, query: str) -> str:
+        try:
+            token = await self.token()
+            result = await self._call(token, query)
+            if result.startswith("HTTP 401:"):
+                # A cached token can outlive its signing key, for example after an issuer
+                # restart with an ephemeral key. Obtain one new token with this server's own
+                # SVID and try once more; a 403 or a second 401 is returned unchanged.
+                result = await self._call(await self.token(discard=token), query)
+            return result
+        except TokenRequestError:
+            raise ToolError("upstream credential unavailable") from None
 
 
 class ScopedToolsServer(MCPServer):

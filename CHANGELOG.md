@@ -37,6 +37,10 @@ published as a package.
 - Python 3.12 and 3.13 CI matrix, Node setup from `.nvmrc`, job timeouts and grouped Dependabot updates.
 - Changelog, contributing guide, code owners, issue and pull request templates, `.editorconfig` and package metadata URLs, classifiers and keywords.
 
+### Fixed
+
+- `notes.search_upstream` replaces its cached upstream token once when the upstream answers 401 `invalid_token`, for example after the issuer restarted with an ephemeral signing key. A 403 or a second 401 is returned unchanged.
+
 ### Changed
 
 - `mcp-svid-authz` requires one key source: `--signing-key-file`, a transit signer, or the explicit `--dev-ephemeral-signing-key`. Per-process ephemeral keys made replicas publish different JWKS. The lab passes the development flag.
