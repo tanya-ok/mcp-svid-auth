@@ -1,4 +1,8 @@
-"""Per-process fixed-window cost bounds, independent of unverified identities."""
+"""Fixed-window cost bounds, independent of unverified identities.
+
+Per process by default. With a shared store the window is wall-clock seconds and the count is
+shared by every replica; a store error refuses the request.
+"""
 
 from __future__ import annotations
 
@@ -7,12 +11,17 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
+from mcp_svid_auth.state import SharedState, StateUnavailableError
+
 
 @dataclass
 class WindowBudget:
     limit: int
     max_keys: int = 10_000
     clock: Callable[[], float] = time.monotonic
+    shared: SharedState | None = None
+    name: str = "budget"
+    wall_clock: Callable[[], float] = time.time
     _window: int = -1
     _counts: dict[str, int] = field(default_factory=dict)
     _lock: threading.Lock = field(default_factory=threading.Lock)
@@ -22,6 +31,14 @@ class WindowBudget:
             raise ValueError("request budgets must be positive")
 
     def take(self, key: str = "global") -> bool:
+        if self.shared is not None:
+            window = int(self.wall_clock())
+            try:
+                return self.shared.add_up_to(
+                    self.name, f"{window}\n{key}", 1, self.limit, window + 2
+                )
+            except StateUnavailableError:
+                return False
         with self._lock:
             window = int(self.clock())
             if window != self._window:

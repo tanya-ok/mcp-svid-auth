@@ -332,7 +332,7 @@ def test_forwarding_must_also_ignore_loopback_listeners(
     config = yaml.safe_load((lab.DEPLOY / "lima-kubernetes.yaml").read_text())
     assert config["portForwards"][0]["guestIPMustBeZero"] is False
     config["mounts"] = [
-        {"location": str(lab.ROOT.parent / name), "writable": False} for name in lab.REPOS
+        {"location": str(lab.repo_path(name)), "writable": False} for name in lab.REPOS
     ]
     config["portForwards"][0]["guestIPMustBeZero"] = flag
     instance = {"name": lab.VM, "cpus": 2, "memory": 4 * 1024**3, "config": config}
@@ -376,7 +376,7 @@ def test_demo_projection_uses_known_titles_and_requires_all_scenarios(tmp_path: 
     path.write_text(json.dumps(report))
     result = data.demo_result(path)
     assert result is not None and result["passed"] is False
-    assert len(result["results"]) == 18
+    assert len(result["results"]) == 22
     assert "sensitive" not in json.dumps(result)
     assert "private" not in json.dumps(result)
 
@@ -426,7 +426,7 @@ def test_ui_policy_is_actual_file_and_refuses_unknown_values(tmp_path: Path) -> 
     path.write_text(
         "trust_domain: example.org\nclients:\n"
         "  - spiffe_id: spiffe://example.org/agent/research\n"
-        "    resources:\n      http://notes-b:8102/mcp: [notes:read]\n"
+        "    resources:\n      https://notes-b:8102/mcp: [notes:read]\n"
     )
     assert data.permissions(path)[0]["scopes"] == ["notes:read"]
     path.write_text(

@@ -68,7 +68,7 @@ make down
 make runtime-stop
 ```
 
-The dedicated `security-lab` Lima VM runs k3s Kubernetes with containerd, SPIRE 1.15.3, the two authorization-server modes, Notes MCP services and the FHIR gateway with the SPIFFE bridge. It waits for readiness and asserts all [eighteen scenarios](demo.md). See [shared lab](kubernetes-lab.md).
+The dedicated Lima VM (`security-lab` by default, `LAB_VM` to change it) runs k3s Kubernetes with containerd, SPIRE 1.15.3, the two authorization-server modes, Notes MCP services and the FHIR gateway with the SPIFFE bridge. It waits for readiness and asserts all [22 scenarios](demo.md). See [shared lab](kubernetes-lab.md).
 
 The expiry scenario uses 60-second SVIDs and waits beyond the 30-second validation leeway. Allow a few minutes. The verdict report and synthetic audit captures remain in ignored `deploy/.data/`. `make down` removes only lab-owned namespaces, RBAC and runtime volumes. `make runtime-stop` stops the VM and releases its CPU and memory; its disk and cached container images remain for the next run.
 

@@ -307,7 +307,7 @@
 						},
 					},
 					badge(
-						demo.passed ? "All 18 passed" : "Incomplete or failed",
+						demo.passed ? `All ${demo.results.length} passed` : "Incomplete or failed",
 						demo.passed,
 					),
 					h(

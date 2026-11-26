@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from pathlib import Path
@@ -48,8 +47,8 @@ IDENTITY_SERVICES = (
 )
 CALLERS = {"spiffe://example.org/" + identity for identity, _ in IDENTITIES}
 RESOURCES = {
-    "http://notes-a:8101/mcp",
-    "http://notes-b:8102/mcp",
+    "https://notes-a:8101/mcp",
+    "https://notes-b:8102/mcp",
     "https://fhir.security-lab.svc.cluster.local:8443/mcp",
 }
 SCOPES = {"notes:read", "notes:write", "fhir:read"}
@@ -72,6 +71,10 @@ SCENARIOS = (
     "Disallowed client certificate refused",
     "Missing client certificate refused",
     "FHIR audit caller and safe output",
+    "Unprivileged pod launch with an allowed ServiceAccount denied",
+    "Unprivileged Deployment with an allowed ServiceAccount denied",
+    "ServiceAccount outside the allow list denied",
+    "Operator launch with an allowed ServiceAccount admitted",
 )
 
 
@@ -125,7 +128,7 @@ def demo_result(path: Path) -> dict[str, Any] | None:
         return None
     at = timestamp(item.get("timestamp"))
     results = item.get("results")
-    if at is None or not isinstance(results, list) or len(results) > 18:
+    if at is None or not isinstance(results, list) or len(results) > len(SCENARIOS):
         return None
     completed = {
         row.get("scenario")
@@ -134,7 +137,7 @@ def demo_result(path: Path) -> dict[str, Any] | None:
     }
     return {
         "at": at,
-        "passed": item.get("passed") is True and completed == set(range(1, 19)),
+        "passed": item.get("passed") is True and completed == set(range(1, len(SCENARIOS) + 1)),
         "results": [
             {"number": number, "title": title, "passed": number in completed}
             for number, title in enumerate(SCENARIOS, 1)
@@ -221,8 +224,7 @@ def service_rows(observations: dict[str, dict[str, Any]]) -> list[dict[str, Any]
 def snapshot() -> dict[str, Any]:
     evidence = lab.DATA
     if ISOLATED:
-        source = Path(os.environ.get("SVID_LAB_MOUNT_ROOT", str(lab.ROOT))).resolve()
-        evidence = source / "deploy" / ".data"
+        evidence = lab.repo_path(lab.REPOS[0]) / "deploy" / ".data"
     namespaces = ["security-lab", "spire-system"]
     if PROFILE.exists():
         if not lab.owned_namespace(IDENTITY_NAMESPACE):

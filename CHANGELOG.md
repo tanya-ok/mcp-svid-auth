@@ -9,12 +9,27 @@ published as a package.
 
 ### Added
 
+- HTTPS listeners for the token endpoint and MCP server (`--tls-cert`, `--tls-key`), optional client certificate verification (`--tls-client-ca`), TLS 1.2 minimum and a stderr event for plain HTTP listeners off loopback.
+- `--ca-file` for outbound HTTPS from the agent, stdio wrapper and MCP server (JWKS and upstream), with verification kept on.
+- Revocation file (`--revocation-file`) on the token endpoint and MCP server: revoked access token `jti` values and blocked SPIFFE IDs are refused within `--revocation-poll-seconds`; blocked IDs get no new tokens or exchanges; an unreadable or invalid file fails closed.
+- Opt-in access token `jti` tracking on the MCP server (`--max-calls-per-token`): each token authorizes at most N tool calls, bounded memory, refuses new tokens when full.
+- Ed25519 signed audit checkpoints (`--signing-key`, `--checkpoint-public-key`), so a checkpoint rebuilt or re-signed by the log writer is detected.
+- `--allow-private-host HOST` on the agent, stdio wrapper and MCP server: an exact host name may resolve to a private address while https and all other address checks stay on, replacing the blanket dev flag for in-cluster names.
+- `--signing-key-file` loads an operator-provided P-256 signing key with owner-only permissions and a stable RFC 7638 `kid`, so tokens survive restarts and replicas share one key; `--verification-key-file` publishes previous public keys for rotation overlap.
+- Shared replay and rate-limit state (`--state-store-url`, optional `valkey` extra): Valkey or Redis keeps SVID `jti`, DPoP proof and token call sets plus authz request budgets for all replicas, with atomic operations, TLS, password files and fail-closed errors. A store that evicts keys is refused.
+- Signer seam (`sign(claims)`, `public_jwks()`) with an OpenBao or Vault transit implementation (`--transit-address`, `--transit-key`, `--transit-token-file`): the private key stays in the transit engine, replicas publish the same keys and transit rotation keeps old tokens verifiable. Outages fail closed with 503 and readiness failure.
+- The MCP server serves the last good JWKS for up to the access token lifetime plus skew when the issuer is unreachable and reports `/readyz` as `degraded`; authz readiness also requires a current Workload API trust bundle.
+- `--metrics` serves Prometheus text on `/metrics`: decision counters with a fixed reason vocabulary (replays, rate limits, JWKS failures, revocations, store and signer outages) and dependency gauges for the store, revocation file, signer, trust bundle, policy and JWKS.
+- `mcp-svid-agent --token-per-call` fetches a new token before each tool call, for servers that set `--max-calls-per-token 1`.
+- `/healthz` and `/readyz` endpoints. Readiness fails when the grant policy failed to load or the JWKS is unavailable.
 - Opt-in RFC 9449 DPoP: `--dpop-required` on the token endpoint and MCP server, `--dpop` on the agent. Bound tokens sent as Bearer are refused in every mode, and bound subject tokens are refused at token exchange. Not verified over HTTPS; the FHIR gateway stays Bearer only.
 - Opt-in RFC 8693 token exchange (`--token-exchange`): on-behalf-of access tokens with an `act` claim, scopes bounded by subject and actor, expiry bounded by the subject token, no chained delegation.
 - In-process tool response poisoning scenario (`make attack-scenarios`) with a design check for RFC 8693 style delegated scope narrowing.
 - Hash-chained audit lines, terminal checkpoints and the `mcp-svid-audit-verify` command.
 - Grant policy reload on SIGHUP or file change; tool calls bounded by the caller token expiry.
 - Scripted threat model demo scenarios, later run as eighteen asserted scenarios in a shared Kubernetes lab on Lima, k3s and containerd with SPIRE.
+- Lab ServiceAccount admission policy with four negative and positive scenarios (19-22), and TLS between all lab services with a per-run CA and `--allow-private-host`; the lab ran 22 of 22 on 2026-11-26.
+- `LAB_VM` and `SVID_LAB_REPO_<NAME>` select the Lima instance and repository checkouts for the lab.
 - Read-only Headlamp interface and an optional passwordless ZITADEL viewer for the lab.
 - Request and verification budgets, and planned signing key rotation with public key overlap.
 - Local MCP review orchestration (quorum) with recorded portfolio review evidence.
@@ -22,8 +37,15 @@ published as a package.
 - Python 3.12 and 3.13 CI matrix, Node setup from `.nvmrc`, job timeouts and grouped Dependabot updates.
 - Changelog, contributing guide, code owners, issue and pull request templates, `.editorconfig` and package metadata URLs, classifiers and keywords.
 
+### Fixed
+
+- `notes.search_upstream` replaces its cached upstream token once when the upstream answers 401 `invalid_token`, for example after the issuer restarted with an ephemeral signing key. A 403 or a second 401 is returned unchanged.
+
 ### Changed
 
+- `mcp-svid-authz` requires one key source: `--signing-key-file`, a transit signer, or the explicit `--dev-ephemeral-signing-key`. Per-process ephemeral keys made replicas publish different JWKS. The lab passes the development flag.
+- `docs/production-readiness.md` lists closed and remaining gaps. README, security notes, package description and the Beta classifier describe the project by what it does; it is stated as not yet production-ready.
+- The source archive is built from an explicit path allowlist.
 - Discovery URLs require https and public addresses unless development flags allow otherwise.
 - The stdio wrapper stops the child when an exported environment token expires.
 - The Podman runtime path was retired; containerd is the only lab runtime.
@@ -32,6 +54,10 @@ published as a package.
 
 ### Security
 
+- Token endpoint allow records include the issued `jti`, audience, expiry, actor and a hash of the DPoP key thumbprint, so a token can be found and revoked. A replayed DPoP proof is rejected before the JWT-SVID `jti` is recorded, so it no longer burns the assertion.
+- Signed audit checkpoints carry a sequence, creation time and previous checkpoint hash; `--min-sequence`, `--min-records` and `--max-age` detect an older genuine checkpoint presented with a truncated log. Audit records gain `schema_version` and `replica_id`, each record is fsynced, one writer per file is enforced with a lock, resume checks a bounded tail, and `--continues-from` verifies a rotated file.
+- Signing, verification and checkpoint key files are opened once without following symlinks and checked on the descriptor: regular file, size cap, and for private keys owner-only permissions owned by the service user.
+- Revocation files are read once per load with O_NOFOLLOW, a regular-file check and a size cap, so parsed content and digest always match and symlinks, FIFOs or huge files fail closed. Empty or partial files are refused instead of meaning "revoke nothing". Optional detached Ed25519 signature (`--revocation-public-key`). `--revocation-poll-seconds` is limited to 0.5 to 300. The in-process token use store has a per-subject quota.
 - Raised PyJWT to 2.15 (spiffe to 0.3.2) for published advisories.
 - A JWKS with malformed keys now denies the token with audit reason `jwks_invalid` instead of an unhandled error.
 - Bumped the TypeScript MCP SDK used by the interop example to 1.32.1 (GHSA-6qxp-vccf-f47h).

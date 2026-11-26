@@ -1,6 +1,6 @@
 # Compatibility and integration boundaries
 
-This is a reproducible reference flow for JWT-SVID client authentication and MCP resource protection. It is a proof of concept, with the following deliberately bounded support.
+This is a reproducible reference flow for JWT-SVID client authentication and MCP resource protection. Support is deliberately bounded as follows.
 
 ## Profiles
 

@@ -23,6 +23,8 @@ The older 2 CPU / 2 GiB Podman demo and its label-impersonation weakness were re
 
 ## Deliberate remaining limits
 
+Current state, 2026-11-26: TLS and mTLS listeners, revocation, persistent signing keys and signed checkpoints are implemented; the [production readiness](production-readiness.md) table supersedes this section for open gaps.
+
 The Kubernetes lab denies copied labels, but trusts the cluster operator and anyone permitted to use an authorized ServiceAccount. SPIRE 1.15.3 re-serves cached SVIDs, so the normal demo explicitly permits reuse; the default server mode still rejects repeated assertions. Existing access tokens survive grant removal until expiry. Planned signing key rotation keeps an overlap period, but a restart still loses old keys. Scope checks do not determine human intent or clinical authority.
 
 The authorization server's Workload API bundle lookup is a local-demo alternative discouraged for general interoperability by draft -02. The TypeScript test proves the explicit adapter, not generic SDK support for `spiffe_jwt`. A colocated checkpoint supplies no independent protection. These limits are part of the demonstration, not hidden future completion requirements.
@@ -49,6 +51,8 @@ Ranked by security value per effort after a cross-model review. Every denial tes
 | 2 | Revocation by token `jti` and by SPIFFE ID | A revoked `jti` and a blocked SPIFFE ID are refused on the next call, with a stated, tested propagation bound. Blocking also stops new issuance and token exchange. If revocation state cannot be read, validation fails closed. [RFC 7009](https://www.rfc-editor.org/rfc/rfc7009.html) endpoint optional; offline JWT validation alone is not claimed as immediate |
 | 3 | Key and trust lifecycle tests | Signing key rotation, SPIRE bundle and JWKS refresh, a stale key after rotation, and clock skew at the edges each have an asserted scenario |
 | Deferred | Two-hop delegation with per-hop attenuation and a chain-splicing test | Only with a concrete two-hop workflow. Until then the current refusal of chains and `actor_token` stays |
+
+Status on 2026-11-26: items 1 and 2 are implemented (`--dpop-required`, `--revocation-file` with a tested poll bound, blocked IDs stop issuance and exchange, unreadable state fails closed; no RFC 7009 endpoint). Item 3 is partly covered: transit key rotation, JWKS refresh and stale-key serving have tests; a combined lifecycle scenario in the lab does not exist yet.
 
 Residual risk stays explicit: a compromised agent can still misuse its own grant. DPoP and revocation narrow token theft and response time; they do not detect intent.
 

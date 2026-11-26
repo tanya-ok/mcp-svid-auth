@@ -15,6 +15,7 @@ import os
 import re
 import select
 import signal
+import sys
 import threading
 import time
 import uuid
@@ -24,6 +25,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qsl
 
+import anyio
 import jwt
 from cryptography.hazmat.primitives.asymmetric import ec
 from jwt.algorithms import ECAlgorithm
@@ -32,11 +34,27 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 from starlette.routing import Route
 
-from mcp_svid_auth.audit import AuditLog
+from mcp_svid_auth.audit import AuditLog, default_replica_id
 from mcp_svid_auth.budgets import WindowBudget
 from mcp_svid_auth.dpop import DPOP_ALG, DPoPError, ProofReplayStore, VerifiedProof, verify_proof
 from mcp_svid_auth.errors import AuthError
+from mcp_svid_auth.metrics import CONTENT_TYPE as METRICS_CONTENT_TYPE
+from mcp_svid_auth.metrics import Metrics, succeeds
 from mcp_svid_auth.policy import Policy
+from mcp_svid_auth.revocation import (
+    DEFAULT_REVOCATION_POLL_SECONDS,
+    UNAVAILABLE,
+    RevocationList,
+    load_revocation_key,
+    poll_seconds_arg,
+)
+from mcp_svid_auth.signers import Signer, SignerError, VaultTransitSigner
+from mcp_svid_auth.signing_keys import (
+    MAX_PUBLISHED_KEYS,
+    SigningKeyError,
+    load_signing_key,
+    load_verification_key,
+)
 from mcp_svid_auth.spiffe_keys import (
     JWT_SVID_ALGORITHMS,
     KeyResolver,
@@ -44,6 +62,13 @@ from mcp_svid_auth.spiffe_keys import (
     WorkloadApiResolver,
     spiffe_trust_domain,
 )
+from mcp_svid_auth.state import (
+    SharedState,
+    StateUnavailableError,
+    add_state_flags,
+    state_from_args,
+)
+from mcp_svid_auth.tls import add_tls_server_flags, client_context, tls_server_kwargs
 
 CLIENT_ASSERTION_TYPE = "urn:ietf:params:oauth:client-assertion-type:jwt-spiffe"
 ACCESS_TOKEN_ALG = "ES256"  # noqa: S105 - algorithm name, not a secret
@@ -81,6 +106,8 @@ class ReplayCache:
 
     max_entries: int = DEFAULT_REPLAY_CACHE_SIZE
     per_subject_limit: int = DEFAULT_REPLAY_SUBJECT_LIMIT
+    # With a shared store, size limits are the store's memory limit (noeviction) instead.
+    shared: SharedState | None = None
     _subjects: dict[str, int] = field(default_factory=dict)
     _expiry: dict[tuple[str, str], float] = field(default_factory=dict)
     _heap: list[tuple[float, tuple[str, str]]] = field(default_factory=list)
@@ -109,6 +136,21 @@ class ReplayCache:
     def add(self, sub: str, jti: str, expires_at: float, now: float) -> None:
         """Record a first use. Raises AuthError on replay or when the cache is full."""
         key = (sub, jti)
+        if self.shared is not None:
+            try:
+                fresh = self.shared.add_once("svid", f"{sub}\n{jti}", expires_at)
+            except StateUnavailableError as exc:
+                raise AuthError(
+                    "temporarily_unavailable", "replay store unavailable", 503, str(exc)
+                ) from None
+            if not fresh:
+                raise AuthError(
+                    "invalid_client",
+                    "client assertion replayed",
+                    401,
+                    "jti_sha256=" + hashlib.sha256(jti.encode()).hexdigest()[:16],
+                )
+            return
         with self._lock:
             self._evict(now)
             if key in self._expiry:
@@ -163,6 +205,12 @@ class AuthzServer:
     dpop_required: bool = False
     proof_replay: ProofReplayStore = field(default_factory=ProofReplayStore)
     policy_path: Path | None = None
+    revocation: RevocationList | None = None
+    # Previous public keys published for overlap after an operator-managed rotation.
+    published_keys: list[dict[str, Any]] = field(default_factory=list)
+    state: SharedState | None = None
+    signer: Signer | None = None
+    metrics: Metrics | None = None
     _policy_digest: str | None = None
     _reload_lock: threading.Lock = field(default_factory=threading.Lock)
 
@@ -246,11 +294,39 @@ class AuthzServer:
                 now + SIGNING_PREPUBLISH_SECONDS,
             )
 
+    def _sign(self, claims: dict[str, Any]) -> str:
+        if self.signer is not None:
+            try:
+                return self.signer.sign(claims)
+            except SignerError as exc:
+                raise AuthError(
+                    "temporarily_unavailable", "signing unavailable", 503, str(exc)
+                ) from None
+        with self._signing_lock:
+            self._advance_signing_keys()
+            self._active_token_expiry = max(
+                self._active_token_expiry, self.clock() + self.token_ttl
+            )
+            return jwt.encode(
+                claims,
+                self.signing_key,
+                algorithm=ACCESS_TOKEN_ALG,
+                headers={"kid": self.kid, "typ": "at+jwt"},
+            )
+
+    def _published(self, active: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        kids = {jwk["kid"] for jwk in active}
+        return active + [jwk for jwk in self.published_keys if jwk["kid"] not in kids]
+
     def jwks(self) -> dict[str, Any]:
+        """Published verification keys. Raises SignerError when a remote signer is down."""
+        if self.signer is not None:
+            return {"keys": self._published(self.signer.public_jwks())}
         with self._signing_lock:
             self._advance_signing_keys()
             keys = [_public_jwk(self.signing_key, self.kid)]
             keys.extend(jwk for jwk, _ in self._retired_keys)
+            keys.extend(jwk for jwk in self.published_keys if jwk["kid"] != self.kid)
             if self._pending_key is not None:
                 keys.append(_public_jwk(self._pending_key[0], self._pending_key[1]))
             return {"keys": keys}
@@ -353,9 +429,18 @@ class AuthzServer:
             raise AuthError("invalid_grant", "malformed subject token") from exc
         if header.get("typ") != "at+jwt" or header.get("alg") != ACCESS_TOKEN_ALG:
             raise AuthError("invalid_grant", "unsupported subject token")
-        with self._signing_lock:
-            keys = {self.kid: _public_jwk(self.signing_key, self.kid)}
-            keys.update({jwk["kid"]: jwk for jwk, _ in self._retired_keys})
+        if self.signer is not None:
+            try:
+                keys = {jwk["kid"]: jwk for jwk in self.jwks()["keys"]}
+            except SignerError:
+                raise AuthError("temporarily_unavailable", "signing unavailable", 503) from None
+        else:
+            with self._signing_lock:
+                keys = {self.kid: _public_jwk(self.signing_key, self.kid)}
+                keys.update({jwk["kid"]: jwk for jwk, _ in self._retired_keys})
+                keys.update(
+                    {jwk["kid"]: jwk for jwk in self.published_keys if jwk["kid"] != self.kid}
+                )
         jwk = keys.get(str(header.get("kid")))
         if jwk is None:
             raise AuthError("invalid_grant", "subject token key unknown")
@@ -377,6 +462,11 @@ class AuthzServer:
             raise AuthError(
                 "invalid_grant", "subject token invalid", 400, type(exc).__name__
             ) from exc
+        self._check_revocation(
+            claims.get("jti") if isinstance(claims.get("jti"), str) else None,
+            [str(claims["sub"]), str(claims.get("client_id", claims["sub"]))],
+            "invalid_grant",
+        )
         if "act" in claims:
             raise AuthError("invalid_request", "chained delegation is not supported")
         if "cnf" in claims:
@@ -385,6 +475,15 @@ class AuthzServer:
         if not isinstance(claims["aud"], str) or not isinstance(claims["scope"], str):
             raise AuthError("invalid_grant", "subject token invalid")
         return claims
+
+    def _check_revocation(self, jti: str | None, subjects: list[str], code: str) -> None:
+        if self.revocation is None:
+            return
+        denied = self.revocation.check(jti=jti, subjects=subjects)
+        if denied == UNAVAILABLE:
+            raise AuthError("temporarily_unavailable", "revocation state unavailable", 503)
+        if denied is not None:
+            raise AuthError(code, "credential revoked", 401 if code == "invalid_client" else 400)
 
     def _delegate(
         self, form: dict[str, str], actor: str, resource: str, policy: Policy, expiry: int
@@ -420,6 +519,12 @@ class AuthzServer:
             raise AuthError("invalid_dpop_proof", "DPoP proof refused", 400, str(exc)) from exc
 
     def issue(self, form: dict[str, str], dpop_proofs: list[str] | None = None) -> dict[str, Any]:
+        return self._issue(form, dpop_proofs)[0]
+
+    def _issue(
+        self, form: dict[str, str], dpop_proofs: list[str] | None = None
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        """Token response body and the issued claims (for the audit record)."""
         grant_type = form.get("grant_type")
         exchange = grant_type == TOKEN_EXCHANGE_GRANT and self.token_exchange
         if grant_type != "client_credentials" and not exchange:
@@ -438,6 +543,7 @@ class AuthzServer:
         client_id = form.get("client_id")
         if client_id is not None and client_id != spiffe_id:
             raise AuthError("invalid_client", "client_id does not match SVID", 401)
+        self._check_revocation(None, [spiffe_id], "invalid_client")
         proof = self._verify_token_proof(dpop_proofs) if self.dpop_required else None
         now = int(time.time())
         subject = spiffe_id
@@ -450,13 +556,14 @@ class AuthzServer:
             scopes = policy.grant(spiffe_id, resource, parse_scope(form.get("scope")))
         if not self.subject_budget.take(spiffe_id):
             raise AuthError("temporarily_unavailable", "subject request budget exceeded", 429)
-        self._check_jti(spiffe_id, verified, record=True)
         if proof is not None:
+            # Record the proof first: a replayed proof must not burn a valid SVID.
             try:
                 self.proof_replay.add(proof, time.time())
             except DPoPError as exc:
                 raise AuthError("invalid_dpop_proof", "DPoP proof refused", 400, str(exc)) from exc
             extra = {**extra, "cnf": {"jkt": proof.jkt}}
+        self._check_jti(spiffe_id, verified, record=True)
         claims = {
             "iss": self.issuer,
             "sub": subject,
@@ -468,17 +575,7 @@ class AuthzServer:
             "jti": uuid.uuid4().hex,
             **extra,
         }
-        with self._signing_lock:
-            self._advance_signing_keys()
-            self._active_token_expiry = max(
-                self._active_token_expiry, self.clock() + self.token_ttl
-            )
-            token = jwt.encode(
-                claims,
-                self.signing_key,
-                algorithm=ACCESS_TOKEN_ALG,
-                headers={"kid": self.kid, "typ": "at+jwt"},
-            )
+        token = self._sign(claims)
         body: dict[str, Any] = {
             "access_token": token,
             "token_type": "DPoP" if proof is not None else "Bearer",
@@ -487,7 +584,7 @@ class AuthzServer:
         }
         if exchange:
             body["issued_token_type"] = ACCESS_TOKEN_TYPE
-        return body
+        return body, claims
 
     async def token_endpoint(self, request: Request) -> Response:
         form: dict[str, str] = {}
@@ -514,7 +611,12 @@ class AuthzServer:
             if len(form) != len(items):
                 # RFC 6749 section 3.2: request parameters MUST NOT be included more than once.
                 raise AuthError("invalid_request", "repeated request parameter")
-            body = self.issue(form, request.headers.getlist("dpop"))
+            proofs = request.headers.getlist("dpop")
+            if self.signer is not None:
+                # A remote signer does network I/O; keep it off the event loop.
+                body, issued = await anyio.to_thread.run_sync(self._issue, form, proofs)
+            else:
+                body, issued = self._issue(form, proofs)
         except AuthError as exc:
             detail = f" ({exc.detail})" if exc.detail else ""
             self._audit(form, "deny", f"{exc.code}: {exc.description}{detail}")
@@ -523,8 +625,23 @@ class AuthzServer:
                 status_code=exc.status,
                 headers={**_NO_STORE, **({"Retry-After": "1"} if exc.status == 429 else {})},
             )
-        self._audit(form, "allow", f"issued for {form.get('resource')} scope={body['scope']}")
+        self._audit(form, "allow", _issued_reason(issued))
         return JSONResponse(body, headers=_NO_STORE)
+
+    def _register_gauges(self, metrics: Metrics) -> None:
+        if self.state is not None:
+            state = self.state
+            metrics.gauge("state_store", succeeds(state.ping))
+        if self.revocation is not None:
+            revocation = self.revocation
+            metrics.gauge("revocation", lambda: float(revocation.available))
+        if self.signer is not None:
+            signer = self.signer
+            metrics.gauge("signer", succeeds(signer.public_jwks))
+        check = getattr(self.resolver, "check", None)
+        if check is not None:
+            metrics.gauge("trust_bundle", succeeds(lambda: check(self.policy.trust_domain)))
+        metrics.gauge("policy", lambda: float(bool(self.policy.grants)))
 
     def _audit(self, form: dict[str, str], decision: str, reason: str) -> None:
         spiffe_id: str | None = None
@@ -553,18 +670,76 @@ class AuthzServer:
 
     def app(self) -> Starlette:
         async def jwks(_: Request) -> Response:
-            return JSONResponse(self.jwks())
+            try:
+                keys = await anyio.to_thread.run_sync(self.jwks)
+            except SignerError:
+                return JSONResponse(
+                    {"error": "temporarily_unavailable"}, status_code=503, headers=_NO_STORE
+                )
+            return JSONResponse(keys)
 
         async def metadata(_: Request) -> Response:
             return JSONResponse(self.metadata())
 
+        async def healthz(_: Request) -> Response:
+            return JSONResponse({"status": "ok"})
+
+        async def readyz(_: Request) -> Response:
+            # A failed policy reload denies every request; report that as not ready.
+            if not self.policy.grants:
+                return JSONResponse({"status": "policy_unavailable"}, status_code=503)
+            if self.revocation is not None and not self.revocation.available:
+                return JSONResponse({"status": "revocation_unavailable"}, status_code=503)
+            check = getattr(self.resolver, "check", None)
+            if check is not None:
+                try:
+                    await anyio.to_thread.run_sync(check, self.policy.trust_domain)
+                except Exception:
+                    return JSONResponse({"status": "trust_bundle_unavailable"}, status_code=503)
+            if self.signer is not None:
+                try:
+                    await anyio.to_thread.run_sync(self.signer.public_jwks)
+                except SignerError:
+                    return JSONResponse({"status": "signer_unavailable"}, status_code=503)
+            if self.state is not None:
+                try:
+                    self.state.ping()
+                except StateUnavailableError:
+                    return JSONResponse({"status": "state_store_unavailable"}, status_code=503)
+            return JSONResponse({"status": "ok"})
+
+        routes = []
+        if self.metrics is not None:
+            metrics = self.metrics
+            self._register_gauges(metrics)
+
+            async def metrics_endpoint(_: Request) -> Response:
+                text = await anyio.to_thread.run_sync(metrics.render)
+                return Response(text, media_type=METRICS_CONTENT_TYPE)
+
+            routes.append(Route("/metrics", metrics_endpoint, methods=["GET"]))
         return Starlette(
             routes=[
+                *routes,
                 Route("/token", self.token_endpoint, methods=["POST"]),
                 Route("/jwks.json", jwks, methods=["GET"]),
                 Route("/.well-known/oauth-authorization-server", metadata, methods=["GET"]),
+                Route("/healthz", healthz, methods=["GET"]),
+                Route("/readyz", readyz, methods=["GET"]),
             ]
         )
+
+
+def _issued_reason(claims: dict[str, Any]) -> str:
+    """Allow record with what an operator needs to find and revoke the token."""
+    cnf = claims.get("cnf")
+    jkt = cnf.get("jkt") if isinstance(cnf, dict) else None
+    binding = hashlib.sha256(jkt.encode()).hexdigest()[:16] if isinstance(jkt, str) else "none"
+    actor = claims.get("act", {}).get("sub") if isinstance(claims.get("act"), dict) else None
+    return (
+        f"issued for {claims['aud']} scope={claims['scope']} jti={claims['jti']} "
+        f"exp={claims['exp']} cnf_jkt_sha256={binding}" + (f" act={actor}" if actor else "")
+    )
 
 
 def _public_jwk(key: ec.EllipticCurvePrivateKey, kid: str) -> dict[str, Any]:
@@ -667,7 +842,7 @@ def parse_scope(raw: str | None) -> set[str]:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="mcp-svid-authz", description="JWT-SVID to access token bridge (POC)"
+        prog="mcp-svid-authz", description="JWT-SVID to access token bridge"
     )
     parser.add_argument(
         "--issuer",
@@ -708,6 +883,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--audit-log", type=Path, help="audit log file (JSON lines, appended), default stderr"
+    )
+    parser.add_argument(
+        "--audit-replica-id",
+        help="replica name written into every audit record; default HOSTNAME. "
+        "Each replica needs its own --audit-log file",
     )
     parser.add_argument(
         "--max-svid-lifetime",
@@ -754,13 +934,118 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_SIGNING_ROTATION_SECONDS,
         help="planned signing rotation interval; zero disables, minimum 60 seconds",
     )
+    parser.add_argument(
+        "--dev-ephemeral-signing-key",
+        action="store_true",
+        help="development only: generate an in-memory key per process (replicas disagree, "
+        "a restart invalidates tokens); otherwise a key file or transit signer is required",
+    )
+    parser.add_argument(
+        "--transit-address",
+        help="OpenBao or Vault address for a transit signer, e.g. https://vault.example.org:8200",
+    )
+    parser.add_argument("--transit-key", help="transit key name of type ecdsa-p256")
+    parser.add_argument(
+        "--transit-token-file", type=Path, help="owner-only file holding the transit token"
+    )
+    parser.add_argument("--transit-mount", default="transit", help="transit engine mount path")
+    parser.add_argument("--transit-ca-file", type=Path, help="PEM CA bundle for the transit server")
+    parser.add_argument("--transit-namespace", help="Vault Enterprise or OpenBao namespace")
+    parser.add_argument(
+        "--signing-key-file",
+        type=Path,
+        help="PEM P-256 private key, owner-only permissions, kept across restarts; "
+        "needs --signing-rotation-seconds 0",
+    )
+    parser.add_argument(
+        "--verification-key-file",
+        action="append",
+        type=Path,
+        default=[],
+        help="PEM public key of a previous signing key, published for overlap; repeatable",
+    )
+    parser.add_argument(
+        "--revocation-file",
+        type=Path,
+        help="YAML or JSON list of blocked SPIFFE IDs (and revoked jti) refused new tokens",
+    )
+    parser.add_argument(
+        "--revocation-public-key",
+        type=Path,
+        help="Ed25519 PEM public key; the revocation file then needs a valid <file>.sig",
+    )
+    parser.add_argument(
+        "--revocation-poll-seconds",
+        type=poll_seconds_arg,
+        default=DEFAULT_REVOCATION_POLL_SECONDS,
+        help="maximum delay before a changed revocation file applies",
+    )
+    add_tls_server_flags(parser)
+    add_state_flags(parser)
+    parser.add_argument(
+        "--metrics",
+        action="store_true",
+        help="serve Prometheus text metrics on /metrics (bounded labels, no identifiers)",
+    )
     return parser
+
+
+def _key_options(args: argparse.Namespace, parser: argparse.ArgumentParser) -> dict[str, Any]:
+    """AuthzServer key arguments: exactly one key source; exits on unusable input."""
+    sources = [
+        bool(args.signing_key_file),
+        bool(args.transit_address),
+        bool(args.dev_ephemeral_signing_key),
+    ]
+    if sum(sources) != 1:
+        parser.error(
+            "choose one key source: --signing-key-file, --transit-address "
+            "or --dev-ephemeral-signing-key"
+        )
+    if args.verification_key_file and args.dev_ephemeral_signing_key:
+        parser.error("--verification-key-file needs a persistent key source")
+    if len(args.verification_key_file) > MAX_PUBLISHED_KEYS:
+        parser.error(f"at most {MAX_PUBLISHED_KEYS} --verification-key-file values")
+    if args.dev_ephemeral_signing_key:
+        print(json.dumps({"event": "ephemeral_signing_key"}), file=sys.stderr)
+        return {}
+    if args.signing_rotation_seconds != 0:
+        parser.error("a persistent key source needs --signing-rotation-seconds 0")
+    try:
+        published = [load_verification_key(path) for path in args.verification_key_file]
+    except SigningKeyError as exc:
+        parser.error(str(exc))
+    if args.transit_address:
+        if not args.transit_key or not args.transit_token_file:
+            parser.error("--transit-address needs --transit-key and --transit-token-file")
+        try:
+            signer = VaultTransitSigner(
+                address=args.transit_address,
+                key_name=args.transit_key,
+                token_file=args.transit_token_file,
+                mount=args.transit_mount,
+                verify=client_context(args.transit_ca_file),
+                namespace=args.transit_namespace,
+            )
+            signer.public_jwks()
+        except (ValueError, SignerError) as exc:
+            parser.error(f"transit signer unusable: {exc}")
+        return {"signer": signer, "published_keys": published}
+    try:
+        key, kid = load_signing_key(args.signing_key_file)
+    except SigningKeyError as exc:
+        parser.error(str(exc))
+    return {"signing_key": key, "kid": kid, "published_keys": published}
 
 
 def main(argv: list[str] | None = None) -> None:
     import uvicorn  # noqa: PLC0415
 
-    args = build_parser().parse_args(argv)
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    tls = tls_server_kwargs(args, parser, public_url=args.issuer)
+    keys = _key_options(args, parser)
+    state = state_from_args(args, parser)
 
     policy = Policy.load(args.policy)
     resolver: KeyResolver
@@ -772,19 +1057,41 @@ def main(argv: list[str] | None = None) -> None:
         issuer=args.issuer.rstrip("/"),
         policy=policy,
         resolver=resolver,
-        audit=AuditLog(path=args.audit_log, component="authz"),
+        audit=AuditLog(
+            path=args.audit_log,
+            component="authz",
+            replica_id=args.audit_replica_id or default_replica_id(),
+        ),
         max_svid_lifetime=args.max_svid_lifetime,
         svid_replay=args.svid_replay,
-        replay_cache=ReplayCache(args.replay_cache_size, args.replay_subject_limit),
-        request_budget=WindowBudget(args.token_requests_per_second, max_keys=1),
-        subject_budget=WindowBudget(args.subject_requests_per_second),
+        replay_cache=ReplayCache(args.replay_cache_size, args.replay_subject_limit, shared=state),
+        request_budget=WindowBudget(
+            args.token_requests_per_second, max_keys=1, shared=state, name="authz-requests"
+        ),
+        subject_budget=WindowBudget(
+            args.subject_requests_per_second, shared=state, name="authz-subject"
+        ),
+        proof_replay=ProofReplayStore(shared=state),
+        state=state,
+        metrics=Metrics() if args.metrics else None,
         signing_rotation_seconds=args.signing_rotation_seconds,
+        **keys,
         token_exchange=args.token_exchange,
         dpop_required=args.dpop_required,
         policy_path=args.policy,
+        revocation=(
+            RevocationList.load(
+                args.revocation_file,
+                args.revocation_poll_seconds,
+                load_revocation_key(args.revocation_public_key),
+            )
+            if args.revocation_file
+            else None
+        ),
     )
+    server.audit.metrics = server.metrics
     install_policy_reload(server, args.policy_poll_seconds)
-    uvicorn.run(server.app(), host=args.host, port=args.port)
+    uvicorn.run(server.app(), host=args.host, port=args.port, **tls)
 
 
 if __name__ == "__main__":

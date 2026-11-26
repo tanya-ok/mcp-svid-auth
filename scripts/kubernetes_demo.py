@@ -22,6 +22,7 @@ from typing import Any
 import yaml
 
 from mcp_svid_auth.policy import Policy
+from scripts import lab_admission, lab_tls
 from scripts.lab_runtime import SERVICES, DemoRuntimeError
 from scripts.local_identity_profile import ISOLATED
 
@@ -29,12 +30,22 @@ ROOT = Path(__file__).resolve().parent.parent
 DEPLOY = ROOT / "deploy"
 CONFIG = DEPLOY / "kubernetes"
 DATA = DEPLOY / ".data"
-VM = "security-lab"
+VM = os.environ.get("LAB_VM", "security-lab")
+if not re.fullmatch(r"[a-z][a-z0-9-]{0,62}", VM):
+    raise ValueError("LAB_VM must be a lowercase Lima instance name")
 NAMESPACE = "security-lab"
 OWNER = {"app.kubernetes.io/part-of": "security-lab"}
 SOCKET = "/run/spire/security-lab"
 IMAGES_FILE = DATA / "kubernetes-images.json"
 REPOS = ("mcp-svid-auth", "mcp-spiffe-bridge", "hipaa-fhir-mcp")
+
+
+def repo_path(name: str) -> Path:
+    """Checkout of one lab repository; SVID_LAB_REPO_<NAME> overrides the sibling default."""
+    override = os.environ.get("SVID_LAB_REPO_" + name.upper().replace("-", "_"))
+    if override:
+        return Path(override).resolve()
+    return ROOT if name == REPOS[0] else ROOT.parent / name
 
 
 def lima(
@@ -141,10 +152,8 @@ def runtime_up() -> None:
         if ISOLATED:
             raise DemoRuntimeError("Isolated identity requires the existing shared lab VM")
         config = yaml.safe_load((DEPLOY / "lima-kubernetes.yaml").read_text())
-        config["mounts"] = [
-            {"location": str(ROOT.parent / name), "writable": False} for name in REPOS
-        ]
-        if not all((ROOT.parent / name / "package.json").is_file() for name in REPOS[1:]):
+        config["mounts"] = [{"location": str(repo_path(name)), "writable": False} for name in REPOS]
+        if not all((repo_path(name) / "package.json").is_file() for name in REPOS[1:]):
             raise DemoRuntimeError("sibling security repositories are required")
         DATA.mkdir(exist_ok=True)
         profile = DATA / "lima-kubernetes.yaml"
@@ -161,8 +170,7 @@ def verify_instance() -> None:
         raise DemoRuntimeError("dedicated VM is absent; run make runtime-up")
     config = instance["config"]
     mounts = config.get("mounts", [])
-    mount_root = Path(os.environ.get("SVID_LAB_MOUNT_ROOT", str(ROOT))).resolve()
-    expected = {str(mount_root.parent / name) for name in REPOS}
+    expected = {str(repo_path(name)) for name in REPOS}
     if {mount["location"] for mount in mounts} != expected or any(
         mount.get("writable") for mount in mounts
     ):
@@ -246,10 +254,45 @@ def build_image(name: str, context: Path, file: Path) -> str:
 def build() -> dict[str, str]:
     DATA.mkdir(exist_ok=True)
     # Stage integration sources outside the clean-room authorization repository.
-    staging_root = ROOT.parent / "hipaa-fhir-mcp" / "deploy" / ".data"
+    staging_root = repo_path("hipaa-fhir-mcp") / "deploy" / ".data"
     staging_root.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="kubernetes-build-", dir=staging_root) as staging:
         return build_from_context(Path(staging))
+
+
+# Build inputs that newer bridge revisions need; absent in older ones, so copied only if present.
+BUILD_EXTRAS = {"mcp-spiffe-bridge": ("tsconfig.build.json", "scripts/build-cjs-types.mjs")}
+
+# The FHIR repository pins the lab issuer and one resource to plain HTTP. The staged copy,
+# never the checkout, moves them to HTTPS and trusts the lab CA with verification kept on.
+FHIR_TLS_EDITS: dict[str, tuple[tuple[str, str], ...]] = {
+    "fhir-gateway.mjs": (
+        ('const issuer = "http://authz:8100";', 'const issuer = "https://authz:8100";'),
+    ),
+    "probe_fhir.py": (
+        ('ISSUER = "http://authz:8100"', 'ISSUER = "https://authz:8100"'),
+        ('"http://notes-a:8101/mcp"', '"https://notes-a:8101/mcp"'),
+        (
+            "        timeout=10,\n        trust_env=False,\n        data={",
+            "        timeout=10,\n        trust_env=False,\n"
+            f'        verify=ssl.create_default_context(cafile="{lab_tls.CA_FILE}"),\n'
+            "        data={",
+        ),
+    ),
+}
+
+
+def adapt_fhir_sources(directory: Path) -> None:
+    for filename, edits in FHIR_TLS_EDITS.items():
+        path = directory / filename
+        text = path.read_text()
+        for old, new in edits:
+            if new in text:
+                continue
+            if text.count(old) != 1:
+                raise DemoRuntimeError("FHIR lab sources changed; update the TLS edits")
+            text = text.replace(old, new)
+        path.write_text(text)
 
 
 def build_from_context(context: Path) -> dict[str, str]:
@@ -257,7 +300,7 @@ def build_from_context(context: Path) -> dict[str, str]:
     for name in REPOS:
         destination = context / name
         destination.mkdir(exist_ok=True)
-        source = ROOT.parent / name
+        source = repo_path(name)
         files = (
             ["package.json", "pnpm-lock.yaml", "tsconfig.json"]
             if name != REPOS[0]
@@ -265,13 +308,22 @@ def build_from_context(context: Path) -> dict[str, str]:
         )
         if name == "mcp-spiffe-bridge":
             files += ["tsup.config.ts", "pnpm-workspace.yaml"]
+        elif name == "hipaa-fhir-mcp":
+            files += ["pnpm-workspace.yaml"]
         for filename in files:
             shutil.copyfile(source / filename, destination / filename)
+        if name == "mcp-spiffe-bridge":
+            (destination / "scripts").mkdir(exist_ok=True)
+        for filename in BUILD_EXTRAS.get(name, ()):
+            if (source / filename).is_file():
+                (destination / filename).parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(source / filename, destination / filename)
         shutil.copytree(source / "src", destination / "src", dirs_exist_ok=True)
         if name == "hipaa-fhir-mcp":
             shutil.copytree(
                 source / "deploy/kubernetes", destination / "deploy/kubernetes", dirs_exist_ok=True
             )
+    adapt_fhir_sources(context / "hipaa-fhir-mcp" / "deploy" / "kubernetes")
     shutil.copytree(CONFIG, context / REPOS[0] / "deploy/kubernetes", dirs_exist_ok=True)
     for filename in ("probe_svid.py", "probe_mtls.py"):
         shutil.copyfile(DEPLOY / filename, context / REPOS[0] / "deploy" / filename)
@@ -458,7 +510,9 @@ def application_pod(name: str, image: str, command: list[str]) -> dict[str, Any]
         "imagePullPolicy": "Never",
         "command": command,
         "env": [
-            {"name": "SPIFFE_ENDPOINT_SOCKET", "value": "unix:///run/spire/sockets/agent.sock"}
+            {"name": "SPIFFE_ENDPOINT_SOCKET", "value": "unix:///run/spire/sockets/agent.sock"},
+            {"name": "SVID_LAB_CA_FILE", "value": lab_tls.CA_FILE},
+            {"name": "NODE_EXTRA_CA_CERTS", "value": lab_tls.CA_FILE},
         ],
         "resources": {
             "requests": {"cpu": "25m", "memory": "64Mi"},
@@ -476,6 +530,7 @@ def application_pod(name: str, image: str, command: list[str]) -> dict[str, Any]
         "volumeMounts": [
             {"name": "sockets", "mountPath": "/run/spire/sockets", "readOnly": True},
             {"name": "tmp", "mountPath": "/tmp"},  # noqa: S108 - isolated per-pod emptyDir
+            {"name": "ca", "mountPath": lab_tls.CA_MOUNT, "readOnly": True},
         ],
     }
     pod: dict[str, Any] = {
@@ -486,8 +541,19 @@ def application_pod(name: str, image: str, command: list[str]) -> dict[str, Any]
         "volumes": [
             {"name": "sockets", "hostPath": {"path": SOCKET, "type": "Directory"}},
             {"name": "tmp", "emptyDir": {"medium": "Memory", "sizeLimit": "16Mi"}},
+            {"name": "ca", "configMap": {"name": lab_tls.CA_CONFIGMAP}},
         ],
     }
+    if name in lab_tls.SERVERS:
+        container["volumeMounts"].append(
+            {"name": "tls", "mountPath": lab_tls.TLS_MOUNT, "readOnly": True}
+        )
+        pod["volumes"].append(
+            {
+                "name": "tls",
+                "secret": {"secretName": lab_tls.secret_name(name), "defaultMode": 0o440},
+            }
+        )
     if name.startswith("authz"):
         container["volumeMounts"].append(
             {"name": "policy", "mountPath": "/policy", "readOnly": True}
@@ -499,19 +565,7 @@ def application_pod(name: str, image: str, command: list[str]) -> dict[str, Any]
 
 
 def applications(images: dict[str, str]) -> list[dict[str, Any]]:
-    documents = [
-        resource("ServiceAccount", name)
-        for name in (
-            "authz",
-            "notes-a",
-            "notes-b",
-            "notes-rogue",
-            "agent-research",
-            "agent-intruder",
-            "agent-impostor",
-            "fhir",
-        )
-    ]
+    documents = [resource("ServiceAccount", name) for name in lab_admission.APPLICATION_ACCOUNTS]
     for name in ("authz", "authz-strict", "notes-a", "notes-b", "notes-rogue"):
         command = [str(arg) for arg in SERVICES[name]["command"]]
         if name.startswith("authz"):
@@ -591,6 +645,29 @@ def register() -> None:
         server(args)
 
 
+def wait_for_admission(*, timeout: float = 90) -> None:
+    """The API server enforces a new policy shortly after it is stored."""
+    deadline = time.monotonic() + timeout
+    while not lab_admission.denied_by_policy(
+        lab_admission.attempt(kube, lab_admission.probe_pod("default"), None)
+    ):
+        if time.monotonic() >= deadline:
+            raise DemoRuntimeError("ServiceAccount admission policy is not enforced")
+        time.sleep(2)
+
+
+def admission_verdicts() -> list[tuple[str, bool]]:
+    return lab_admission.check(kube, apply)
+
+
+def report_admission() -> None:
+    verdicts = admission_verdicts()
+    for description, passed in verdicts:
+        print(("PASS " if passed else "FAIL ") + description, flush=True)
+    if not all(passed for _, passed in verdicts):
+        raise DemoRuntimeError("ServiceAccount admission policy check failed")
+
+
 def owned_namespace(name: str) -> bool:
     result = kube(["get", "namespace", name, "--ignore-not-found", "-o", "json"])
     checked(result)
@@ -621,6 +698,9 @@ def up() -> None:
             for name in (NAMESPACE, "spire-system")
         ]
     )
+    apply(lab_admission.documents())
+    wait_for_admission()
+    apply(lab_tls.documents())
     apply(spire_server_documents())
     checked(
         kube(
@@ -717,7 +797,12 @@ def down() -> None:
     ACCOUNTS.unlink(missing_ok=True)
     if selected:
         checked(kube(["delete", "namespace", *selected, "--timeout=90s"], timeout=120))
-    for kind in ("clusterrolebinding", "clusterrole"):
+    for kind in (
+        "validatingadmissionpolicybinding",
+        "validatingadmissionpolicy",
+        "clusterrolebinding",
+        "clusterrole",
+    ):
         checked(
             kube(
                 [
@@ -744,6 +829,8 @@ def render() -> None:
     path.write_text(
         yaml.safe_dump_all(
             [
+                *lab_admission.documents(),
+                *lab_tls.documents(placeholder=True),
                 *spire_server_documents(),
                 *spire_agent_documents("PUBLIC BUNDLE GENERATED AT RUNTIME"),
                 *applications(images),
@@ -759,7 +846,16 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "operation",
-        choices=("runtime-up", "runtime-stop", "up", "down", "render", "build", "register"),
+        choices=(
+            "runtime-up",
+            "runtime-stop",
+            "up",
+            "down",
+            "render",
+            "build",
+            "register",
+            "admission-check",
+        ),
     )
     operation = parser.parse_args().operation
     try:
@@ -779,6 +875,8 @@ def main() -> None:
             build()
         elif operation == "register":
             register()
+        elif operation == "admission-check":
+            report_admission()
         else:
             render()
     except DemoRuntimeError as exc:

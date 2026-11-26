@@ -11,12 +11,14 @@ from pathlib import Path
 from typing import Any
 
 from mcp_svid_auth.audit import create_checkpoint, verify_lines
-from scripts.kubernetes_demo import compose_command
+from scripts.kubernetes_demo import admission_verdicts, compose_command, repo_path
 from scripts.lab_runtime import DemoRuntimeError
 
 ROOT = Path(__file__).resolve().parent.parent
 DEPLOY = ROOT / "deploy"
-A, B, ISSUER = "http://notes-a:8101/mcp", "http://notes-b:8102/mcp", "http://authz:8100"
+A, B, ISSUER = "https://notes-a:8101/mcp", "https://notes-b:8102/mcp", "https://authz:8100"
+CA_FILE = "/tls-ca/ca.crt"
+PRIVATE_HOSTS = ("authz", "notes-a", "notes-b", "notes-rogue")
 RW = "notes:read notes:write"
 SEARCH = 'notes.search={"query":"welcome"}'
 WRITE = 'notes.write={"text":"injected instruction"}'
@@ -68,8 +70,9 @@ def agent(
                 service,
                 "--trusted-issuer",
                 ISSUER,
-                "--allow-http",
-                "--allow-private-network",
+                "--ca-file",
+                CA_FILE,
+                *(arg for host in PRIVATE_HOSTS for arg in ("--allow-private-host", host)),
                 "--resource",
                 resource,
                 "--scope",
@@ -79,14 +82,12 @@ def agent(
             expected=expected,
         )
     )
-    # The lab relaxes the URL policy on purpose; the client must say so exactly once.
-    relaxed = [r for r in rows if r.get("event") == "url_policy_relaxed"]
+    # Plain HTTP and blanket private-network access stay off; the client must not relax them.
     require(
-        relaxed
-        == [{"event": "url_policy_relaxed", "allow_http": True, "allow_private_network": True}],
-        "relaxed URL policy not reported",
+        not any(r.get("event") == "url_policy_relaxed" for r in rows),
+        "URL policy was relaxed",
     )
-    return [r for r in rows if r.get("event") != "url_policy_relaxed"]
+    return rows
 
 
 def require(condition: bool, description: str) -> None:
@@ -119,7 +120,8 @@ def wait_for_restart_key(*, timeout: float = 120) -> None:
     while True:
         rows = agent(scope="notes:read", extra=["--call", SEARCH])
         calls = [row for row in rows if row.get("event") == "call"]
-        pending = len(calls) == 1 and calls[0].get("result") == (
+        # The agent appends resource_metadata to the challenge, so match the prefix.
+        pending = len(calls) == 1 and str(calls[0].get("result")).startswith(
             'HTTP 401: Bearer error="invalid_token"'
         )
         if not pending:
@@ -163,9 +165,39 @@ def probe(mode: str) -> dict[str, Any]:
     return rows[0]
 
 
+def is_audit_record(line: str) -> bool:
+    """Audit records are JSON objects with a record id; schema v2 no longer starts with it."""
+    if not line.startswith("{"):
+        return False
+    try:
+        parsed = json.loads(line)
+    except ValueError:
+        return False
+    return isinstance(parsed, dict) and "record_id" in parsed and "prev_hash" in parsed
+
+
+FHIR_RECORD_MARKER = '"caller_identity"'
+
+
+def new_fhir_records(output: str, before: int) -> str:
+    """The FHIR log without its first `before` audit records, so a rerun checks only its own.
+
+    The checker still requires exactly this run's records, with no tolerance for extras.
+    """
+    seen = 0
+    kept = []
+    for line in output.splitlines():
+        if FHIR_RECORD_MARKER in line:
+            seen += 1
+            if seen <= before:
+                continue
+        kept.append(line)
+    return "\n".join(kept) + "\n"
+
+
 def audit_lines(service: str) -> list[str]:
     output = command(["logs", "--no-log-prefix", service])
-    return [line for line in output.splitlines() if line.startswith('{"record_id"')]
+    return [line for line in output.splitlines() if is_audit_record(line)]
 
 
 def scenarios(record: Any) -> None:  # noqa: PLR0915 - numbered demonstration
@@ -199,7 +231,7 @@ def scenarios(record: Any) -> None:  # noqa: PLR0915 - numbered demonstration
     record(4, "cross-resource replay denied")
     check_denial(agent(service="agent-impostor", expected=2), "unauthorized_client")
     record(5, "copied labels do not impersonate another ServiceAccount")
-    rogue = agent("http://notes-rogue:8103/mcp", "notes:read", expected=2)
+    rogue = agent("https://notes-rogue:8103/mcp", "notes:read", expected=2)
     require(len(rogue) == 1 and rogue[0].get("event") == "issuer_refused", "issuer refusal absent")
     record(6, "untrusted issuer refused")
     require(
@@ -253,7 +285,9 @@ def scenarios(record: Any) -> None:  # noqa: PLR0915 - numbered demonstration
         "notes:read",
         [("notes.search", "welcome")],
     )
-    policy_path.write_text(original.replace("      http://notes-b:8102/mcp: [notes:read]\n", "", 1))
+    policy_path.write_text(
+        original.replace("      https://notes-b:8102/mcp: [notes:read]\n", "", 1)
+    )
     try:
         deadline = time.monotonic() + 20
         while time.monotonic() < deadline:
@@ -328,6 +362,8 @@ def scenarios(record: Any) -> None:  # noqa: PLR0915 - numbered demonstration
         (DEPLOY / f".data/{service}.jsonl").write_text("\n".join(lines) + "\n")
         (DEPLOY / f".data/{service}.checkpoint.json").write_text(checkpoint.to_json())
     record(14, "audit links verify; checkpoint detects tail deletion")
+    fhir_log = command(["logs", "--no-log-prefix", "fhir"]).splitlines()
+    fhir_before = sum(FHIR_RECORD_MARKER in line for line in fhir_log)
     for number, mode, service in (
         (15, "allowed", "agent-research"),
         (16, "intruder", "agent-intruder"),
@@ -354,10 +390,10 @@ def scenarios(record: Any) -> None:  # noqa: PLR0915 - numbered demonstration
     audit_probe = subprocess.run(  # noqa: S603 - explicit local script, no shell
         [
             sys.executable,
-            str(ROOT.parent / "hipaa-fhir-mcp/deploy/kubernetes/probe_fhir.py"),
+            str(repo_path("hipaa-fhir-mcp") / "deploy/kubernetes/probe_fhir.py"),
             "audit",
         ],
-        input=output,
+        input=new_fhir_records(output, fhir_before),
         text=True,
         capture_output=True,
         check=False,
@@ -369,6 +405,10 @@ def scenarios(record: Any) -> None:  # noqa: PLR0915 - numbered demonstration
         "FHIR audit verification failed",
     )
     record(18, "FHIR audit caller and data minimization verified")
+    verdicts = admission_verdicts()
+    for number, (description, passed) in enumerate(verdicts, start=19):
+        require(passed, "admission check failed: " + description)
+        record(number, "ServiceAccount admission: " + description)
 
 
 def main() -> None:

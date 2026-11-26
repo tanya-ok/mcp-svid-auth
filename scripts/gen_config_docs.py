@@ -21,7 +21,15 @@ from typing import Any
 
 import yaml
 
-from mcp_svid_auth import agent_client, audit, authz, mcp_server, spiffe_keys, stdio_wrapper
+from mcp_svid_auth import (
+    agent_client,
+    audit,
+    authz,
+    mcp_server,
+    revocation,
+    spiffe_keys,
+    stdio_wrapper,
+)
 from mcp_svid_auth.policy import SCHEMA, Policy
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -121,6 +129,23 @@ def _policy() -> list[str]:
     return [*out, ""]
 
 
+def _revocation() -> list[str]:
+    out = [
+        "## Revocation file",
+        "",
+        "Read by `--revocation-file` on the token endpoint and MCP server. "
+        "Unknown keys, a file over "
+        f"{revocation.MAX_REVOCATION_FILE_BYTES} bytes or more than "
+        f"{revocation.MAX_REVOCATION_ENTRIES} entries make every check fail closed.",
+        "",
+    ]
+    out += _table(
+        ("Key", "Type", "Meaning"),
+        [(f"`{p}`", t, _cell(m)) for p, t, m in revocation.SCHEMA],
+    )
+    return [*out, ""]
+
+
 def generate() -> str:
     _, tool_scopes = mcp_server.build_mcp("notes", mcp_server.NotesStore())
     tools = ", ".join(f"`{t}` (`{s}`)" for t, s in sorted(tool_scopes.items()))
@@ -177,6 +202,7 @@ def generate() -> str:
         [("Chain", "`prev_hash` = SHA-256 of the JCS form of the previous record, hex")],
     )
     lines += _policy()
+    lines += _revocation()
     return "\n".join(lines).rstrip("\n") + "\n"
 
 

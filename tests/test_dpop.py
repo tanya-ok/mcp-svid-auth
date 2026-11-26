@@ -592,13 +592,17 @@ class TestCompatibility:
     async def test_client_without_a_key_refuses_a_bound_token(self, world_factory: Any) -> None:
         async with world_factory() as world:
             world.authz.dpop_required = True
-            original = world.authz.issue
+            original = world.authz._issue
 
-            def forced(form: dict[str, str], proofs: list[str] | None = None) -> dict[str, Any]:
-                body: dict[str, Any] = original(form, [DPoPKey().proof("POST", TOKEN_URL)])
-                return body
+            def forced(
+                form: dict[str, str], proofs: list[str] | None = None
+            ) -> tuple[dict[str, Any], dict[str, Any]]:
+                result: tuple[dict[str, Any], dict[str, Any]] = original(
+                    form, [DPoPKey().proof("POST", TOKEN_URL)]
+                )
+                return result
 
-            world.authz.issue = forced
+            world.authz._issue = forced
             with pytest.raises(TokenRequestError, match="lacks"):
                 await fetch_access_token(
                     SERVER_A,

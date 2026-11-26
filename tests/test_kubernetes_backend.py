@@ -121,13 +121,22 @@ def test_private_umask_cannot_make_public_image_code_unreadable(
             if name == lab.REPOS[0]
             else ["package.json", "pnpm-lock.yaml", "tsconfig.json"]
         )
+        if name in {"mcp-spiffe-bridge", "hipaa-fhir-mcp"}:
+            files += ["pnpm-workspace.yaml"]
         if name == "mcp-spiffe-bridge":
-            files += ["tsup.config.ts", "pnpm-workspace.yaml"]
+            files += ["tsup.config.ts"]
         for filename in files:
             (repository / filename).write_text("public fixture\n")
         if name == "hipaa-fhir-mcp":
             (repository / "deploy/kubernetes").mkdir(parents=True)
             (repository / "deploy/kubernetes/public.mjs").write_text("// Public source\n")
+            (repository / "deploy/kubernetes/fhir-gateway.mjs").write_text(
+                'const issuer = "http://authz:8100";\n'
+            )
+            (repository / "deploy/kubernetes/probe_fhir.py").write_text(
+                'ISSUER = "http://authz:8100"\n"http://notes-a:8101/mcp"\n'
+                "        timeout=10,\n        trust_env=False,\n        data={\n"
+            )
         (repository / ".data").mkdir()
         (repository / ".data/private.json").write_text('{"synthetic": true}')
         (repository / ".git").mkdir()

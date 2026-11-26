@@ -19,6 +19,7 @@ import ipaddress
 import json
 import re
 import socket
+import ssl
 import sys
 from collections.abc import Awaitable, Callable, Collection
 from dataclasses import dataclass, field
@@ -33,6 +34,7 @@ from mcp_svid_auth.authz import CLIENT_ASSERTION_TYPE
 from mcp_svid_auth.dpop import DPoPAuth, DPoPKey
 from mcp_svid_auth.pinned_transport import PinnedTransport
 from mcp_svid_auth.spiffe_keys import SvidSource, WorkloadApiSvidSource
+from mcp_svid_auth.tls import add_ca_flag, client_context
 
 HttpFactory = Callable[..., httpx2.AsyncClient]
 
@@ -105,7 +107,11 @@ class UrlPolicy:
 
     allow_http: bool = False
     allow_private: bool = False
+    # Exact host names the operator allows to resolve to private addresses (in-cluster names).
+    private_hosts: frozenset[str] = frozenset()
     resolve: Resolver = field(default=resolve_host, compare=False)
+    # Certificate verification for the default transport: system trust or a private CA context.
+    tls_verify: ssl.SSLContext | bool = field(default=True, compare=False)
 
     async def check(self, url: str) -> None:
         self._host(url)
@@ -135,7 +141,11 @@ class UrlPolicy:
         if not addresses:
             raise UnsafeUrlError(url, "host does not resolve")
         try:
-            permitted = self.allow_private or all(is_public_address(a) for a in addresses)
+            permitted = (
+                self.allow_private
+                or host.lower().rstrip(".") in self.private_hosts
+                or all(is_public_address(a) for a in addresses)
+            )
         except ValueError:
             permitted = False
         if not permitted:
@@ -190,7 +200,7 @@ def default_http(url_policy: UrlPolicy = STRICT_URLS, **kwargs: Any) -> httpx2.A
     return httpx2.AsyncClient(
         timeout=httpx2.Timeout(30, read=300),
         trust_env=False,
-        transport=PinnedTransport(url_policy.addresses),
+        transport=PinnedTransport(url_policy.addresses, verify=url_policy.tls_verify),
         **kwargs,
     )
 
@@ -353,35 +363,44 @@ async def call_tool(  # noqa: PLR0913
     return prefix + " ".join(t for t in texts if t)
 
 
-async def run(args: argparse.Namespace) -> int:
-    source: SvidSource = WorkloadApiSvidSource(socket_path=args.socket)
+async def run(
+    args: argparse.Namespace,
+    source: SvidSource | None = None,
+    http: HttpFactory = default_http,
+) -> int:
+    svids: SvidSource = source or WorkloadApiSvidSource(socket_path=args.socket)
     urls = url_policy_from_args(args)
     dpop = DPoPKey() if args.dpop else None
-    token = await fetch_access_token(
-        args.resource,
-        source,
-        spiffe_id=args.spiffe_id,
-        scope=args.scope,
-        trusted_issuers=args.trusted_issuer,
-        url_policy=urls,
-        dpop=dpop,
-    )
-    print(
-        json.dumps(
-            {
-                "event": "token",
-                "resource": args.resource,
-                "scope": token["scope"],
-                "expires_in": token["expires_in"],
-            }
+
+    async def new_token() -> dict[str, Any]:
+        token = await fetch_access_token(
+            args.resource,
+            svids,
+            spiffe_id=args.spiffe_id,
+            scope=args.scope,
+            trusted_issuers=args.trusted_issuer,
+            url_policy=urls,
+            dpop=dpop,
+            **({"http": http} if http is not default_http else {}),
         )
-    )
+        event = {
+            "event": "token",
+            "resource": args.resource,
+            "scope": token["scope"],
+            "expires_in": token["expires_in"],
+        }
+        print(json.dumps(event))
+        return token
+
+    token = await new_token()
     target = args.steal_token or args.resource
     if args.steal_token:
         print(json.dumps({"event": "replay", "issued_for": args.resource, "sent_to": target}))
-    for tool, arguments in args.call or DEFAULT_CALLS:
+    for index, (tool, arguments) in enumerate(args.call or DEFAULT_CALLS):
+        if args.token_per_call and index > 0:
+            token = await new_token()
         outcome = await call_tool(
-            target, token["access_token"], tool, arguments, url_policy=urls, dpop=dpop
+            target, token["access_token"], tool, arguments, http=http, url_policy=urls, dpop=dpop
         )
         print(json.dumps({"event": "call", "server": target, "tool": tool, "result": outcome}))
     return 0
@@ -441,11 +460,24 @@ def add_url_flags(parser: argparse.ArgumentParser) -> None:
         action="store_true",
         help="dev only: accept hosts that resolve to private, loopback or link-local addresses",
     )
+    parser.add_argument(
+        "--allow-private-host",
+        action="append",
+        default=[],
+        metavar="HOST",
+        help="exact host allowed to resolve to a private address; repeatable, https still required",
+    )
+    add_ca_flag(parser)
 
 
 def url_policy_from_args(args: argparse.Namespace) -> UrlPolicy:
     """Build the URL policy; a relaxed policy is announced on stderr as a JSON event."""
-    policy = UrlPolicy(allow_http=args.allow_http, allow_private=args.allow_private_network)
+    policy = UrlPolicy(
+        allow_http=args.allow_http,
+        allow_private=args.allow_private_network,
+        private_hosts=frozenset(h.lower().rstrip(".") for h in args.allow_private_host),
+        tls_verify=client_context(args.ca_file),
+    )
     if policy.allow_http or policy.allow_private:
         event = {
             "event": "url_policy_relaxed",
@@ -486,6 +518,12 @@ def build_parser() -> argparse.ArgumentParser:
         type=call_arg,
         metavar="TOOL=JSON",
         help="tool to call with JSON arguments; repeatable; default notes.search then notes.write",
+    )
+    parser.add_argument(
+        "--token-per-call",
+        action="store_true",
+        help="fetch a new token, with a new SVID, before every tool call; "
+        "for servers with --max-calls-per-token 1",
     )
     parser.add_argument(
         "--steal-token",

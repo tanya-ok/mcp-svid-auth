@@ -1,5 +1,8 @@
 # Portfolio publication and live demonstration
 
+!!! note "Dated record from 2026-10-07"
+    Not updated since. mcp-svid-auth has no `docs/publication-readiness.md`; its current state is in [production readiness](production-readiness.md).
+
 Preparation started on 2026-10-07 after the 13 quorum implementation tasks
 completed. This is a separate acceptance gate. A closed implementation issue,
 a unit test or a generated website is not proof of publication readiness.

@@ -132,6 +132,8 @@ async def test_scope_enforced_per_tool(world_factory: Any) -> None:
     ]
     assert lines[1]["reason"] == "insufficient_scope: needs notes:write"
     assert set(lines[1]) == {
+        "schema_version",
+        "replica_id",
         "record_id",
         "parent_record_id",
         "prev_hash",

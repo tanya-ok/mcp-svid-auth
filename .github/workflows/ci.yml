@@ -37,6 +37,11 @@ jobs:
       - run: uv run mypy
       - name: Config docs drift check
         run: uv run python scripts/gen_config_docs.py --check
+      - name: Install a Valkey or Redis test server
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends valkey-server \
+            || sudo apt-get install -y --no-install-recommends redis-server
       - run: uv run pytest -q
       - name: Headlamp namespace regression checks
         run: node --test tests/headlamp-settings.test.mjs

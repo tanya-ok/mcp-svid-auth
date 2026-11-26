@@ -20,6 +20,7 @@ import asyncio
 import contextlib
 import hashlib
 import json
+import ssl
 import time
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, field
@@ -66,13 +67,33 @@ from mcp_svid_auth.agent_client import (
     issuer_arg,
     url_policy_from_args,
 )
-from mcp_svid_auth.audit import AuditLog
+from mcp_svid_auth.audit import AuditLog, default_replica_id
 from mcp_svid_auth.budgets import WindowBudget
 from mcp_svid_auth.dpop import DPOP_ALG, DPoPError, ProofReplayStore, verify_proof
+from mcp_svid_auth.metrics import CONTENT_TYPE as METRICS_CONTENT_TYPE
+from mcp_svid_auth.metrics import Metrics, succeeds
+from mcp_svid_auth.revocation import (
+    DEFAULT_REVOCATION_POLL_SECONDS,
+    DEFAULT_TOKEN_USE_CACHE_SIZE,
+    RevocationList,
+    TokenUseCounter,
+    TokenUseError,
+    load_revocation_key,
+    poll_seconds_arg,
+)
 from mcp_svid_auth.spiffe_keys import SvidSource, WorkloadApiSvidSource
+from mcp_svid_auth.state import (
+    SharedState,
+    StateUnavailableError,
+    add_state_flags,
+    state_from_args,
+)
+from mcp_svid_auth.tls import add_tls_server_flags, client_context, tls_server_kwargs
 
 JWKS_CACHE_SECONDS = 60
 JWKS_MIN_REFETCH_SECONDS = 10
+# Access token lifetime plus clock skew: the longest a token signed under a cached key lives.
+JWKS_STALE_SECONDS = 330
 _ACCESS_TOKEN_ALGS = ["ES256"]
 _ACCESS_TOKEN_TYP = "at+jwt"  # noqa: S105 - media type, not a secret
 MAX_BODY_BYTES = 1024 * 1024
@@ -80,6 +101,7 @@ MAX_ACCESS_TOKEN_BYTES = 8192
 MAX_JWKS_BYTES = 65_536
 MAX_JWKS_KEYS = 16
 DEFAULT_TOKEN_VERIFICATIONS_PER_SECOND = 256
+HEALTH_PATHS = ("/healthz", "/readyz", "/metrics")
 
 
 class JwksUnavailableError(Exception):
@@ -118,20 +140,36 @@ class JwksFetcher:
     jwks_uri: str
     transport: httpx2.AsyncBaseTransport | None = None
     clock: Callable[[], float] = time.monotonic
+    verify: ssl.SSLContext | bool = True
     _cached: dict[str, Any] | None = None
     _fetched_at: float = 0.0
     _attempted_at: float | None = None
     _lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    degraded: bool = False
 
     async def get(self, *, refresh: bool = False) -> dict[str, Any]:
         async with self._lock:
             if self._cached is None or self.clock() - self._fetched_at > JWKS_CACHE_SECONDS:
                 if not self._may_refetch():
-                    raise JwksUnavailableError("JWKS retry budget exceeded")
-                return await self._fetch()
+                    return self._stale(JwksUnavailableError("JWKS retry budget exceeded"))
+                try:
+                    return await self._fetch()
+                except JwksUnavailableError as exc:
+                    return self._stale(exc)
             if refresh and self._may_refetch():
-                return await self._fetch()
+                with contextlib.suppress(JwksUnavailableError):
+                    return await self._fetch()
             return self._cached
+
+    def _stale(self, error: JwksUnavailableError) -> dict[str, Any]:
+        """Serve the last good set while tokens signed under it can still be valid."""
+        if self._cached is None or self.clock() - self._fetched_at > (
+            JWKS_CACHE_SECONDS + JWKS_STALE_SECONDS
+        ):
+            self.degraded = False
+            raise error
+        self.degraded = True
+        return self._cached
 
     def _may_refetch(self) -> bool:
         return (
@@ -144,7 +182,11 @@ class JwksFetcher:
         try:
             async with (
                 httpx2.AsyncClient(
-                    transport=self.transport, timeout=5, follow_redirects=False
+                    transport=self.transport,
+                    timeout=5,
+                    follow_redirects=False,
+                    trust_env=False,
+                    verify=self.verify,
                 ) as client,
                 client.stream("GET", self.jwks_uri) as response,
             ):
@@ -163,6 +205,7 @@ class JwksFetcher:
             raise JwksUnavailableError("too many JWKS keys")
         self._cached = jwks
         self._fetched_at = self._attempted_at
+        self.degraded = False
         return jwks
 
 
@@ -178,6 +221,8 @@ class AudienceBoundVerifier:
     budget: WindowBudget = field(
         default_factory=lambda: WindowBudget(DEFAULT_TOKEN_VERIFICATIONS_PER_SECOND, max_keys=1)
     )
+    revocation: RevocationList | None = None
+    require_jti: bool = False
 
     async def verify_token(self, token: str) -> AccessToken | None:
         return await self._verify(token, bound=False)
@@ -221,6 +266,7 @@ class AudienceBoundVerifier:
             if claims["aud"] not in (self.resource, [self.resource]):
                 raise jwt.InvalidAudienceError("audience must name this resource only")
             jkt = _check_binding(claims, bound=bound)
+            self._check_jti(claims)
         except jwt.PyJWTError as exc:
             self.audit.write(
                 spiffe_id=_unverified_sub(token),
@@ -229,20 +275,16 @@ class AudienceBoundVerifier:
                 reason=f"invalid_token: {type(exc).__name__}",
             )
             return None
-        except JwksUnavailableError:
-            self.audit.write(
-                spiffe_id=_unverified_sub(token),
-                tool=None,
-                decision="deny",
-                reason="jwks_unavailable",
+        except (JwksUnavailableError, JwksInvalidError, _RevokedError) as exc:
+            reason = (
+                str(exc)
+                if isinstance(exc, _RevokedError)
+                else "jwks_unavailable"
+                if isinstance(exc, JwksUnavailableError)
+                else "jwks_invalid"
             )
-            return None
-        except JwksInvalidError:
             self.audit.write(
-                spiffe_id=_unverified_sub(token),
-                tool=None,
-                decision="deny",
-                reason="jwks_invalid",
+                spiffe_id=_unverified_sub(token), tool=None, decision="deny", reason=reason
             )
             return None
         return AccessToken(
@@ -252,8 +294,41 @@ class AudienceBoundVerifier:
             expires_at=int(claims["exp"]),
             resource=self.resource,
             subject=str(claims["sub"]),
-            claims={"iss": claims["iss"], **({"cnf_jkt": jkt} if bound else {})},
+            claims={
+                "iss": claims["iss"],
+                **({"jti": claims["jti"]} if isinstance(claims.get("jti"), str) else {}),
+                **({"cnf_jkt": jkt} if bound else {}),
+            },
         )
+
+    def _check_jti(self, claims: dict[str, Any]) -> None:
+        """Require a usable jti when tracking needs it, then apply the revocation list."""
+        jti = claims.get("jti")
+        if not (self.require_jti or self.revocation is not None):
+            return
+        if not (isinstance(jti, str) and 0 < len(jti) <= 256):
+            raise jwt.MissingRequiredClaimError("jti")
+        if self.revocation is None:
+            return
+        act = claims.get("act")
+        denied = self.revocation.check(
+            jti=jti,
+            subjects=[
+                _str_or_none(claims.get("sub")),
+                _str_or_none(claims.get("client_id")),
+                _str_or_none(act.get("sub")) if isinstance(act, dict) else None,
+            ],
+        )
+        if denied is not None:
+            raise _RevokedError(denied)
+
+
+class _RevokedError(Exception):
+    """Carries a fixed revocation audit reason."""
+
+
+def _str_or_none(value: object) -> str | None:
+    return value if isinstance(value, str) else None
 
 
 class DPoPAuthBackend(AuthenticationBackend):
@@ -359,9 +434,11 @@ class ToolScopeGuard:
         clock: Callable[[], float] = time.time,
         *,
         scheme: str = "Bearer",
+        token_uses: TokenUseCounter | None = None,
     ) -> None:
         self.app = app
         self.scheme = scheme
+        self.token_uses = token_uses
         self.tool_scopes = tool_scopes
         self.resource_metadata_url = resource_metadata_url
         self.audit = audit
@@ -388,25 +465,16 @@ class ToolScopeGuard:
             )
             await _error(send, 400, "invalid_request", "request body is not valid JSON-RPC")
             return
+        if not await self._check_scopes(send, spiffe_id, granted, calls):
+            return
+        if calls and not await self._consume(send, user, spiffe_id, calls):
+            return
         for call in calls:
-            required = self.tool_scopes.get(call)
-            if required is None:
-                self.audit.write(
-                    spiffe_id=spiffe_id, tool=None, decision="deny", reason="unknown tool"
-                )
-                await _error(send, 400, "invalid_request", "unknown tool")
-                return
-            if required not in granted:
-                self.audit.write(
-                    spiffe_id=spiffe_id,
-                    tool=call,
-                    decision="deny",
-                    reason=f"insufficient_scope: needs {required}",
-                )
-                await _forbidden(send, required, self.resource_metadata_url, self.scheme)
-                return
             self.audit.write(
-                spiffe_id=spiffe_id, tool=call, decision="allow", reason=f"scope {required}"
+                spiffe_id=spiffe_id,
+                tool=call,
+                decision="allow",
+                reason=f"scope {self.tool_scopes[call]}",
             )
         expires_at = user.access_token.expires_at if isinstance(user, AuthenticatedUser) else None
         if not calls or expires_at is None:
@@ -420,6 +488,57 @@ class ToolScopeGuard:
             spiffe_id=spiffe_id,
             calls=calls,
         )
+
+    async def _check_scopes(
+        self, send: Send, spiffe_id: str | None, granted: set[str], calls: list[str]
+    ) -> bool:
+        """Every call needs a declared scope the token grants; False after sending the refusal."""
+        for call in calls:
+            required = self.tool_scopes.get(call)
+            if required is None:
+                self.audit.write(
+                    spiffe_id=spiffe_id, tool=None, decision="deny", reason="unknown tool"
+                )
+                await _error(send, 400, "invalid_request", "unknown tool")
+                return False
+            if required not in granted:
+                self.audit.write(
+                    spiffe_id=spiffe_id,
+                    tool=call,
+                    decision="deny",
+                    reason=f"insufficient_scope: needs {required}",
+                )
+                await _forbidden(send, required, self.resource_metadata_url, self.scheme)
+                return False
+        return True
+
+    async def _consume(
+        self, send: Send, user: object, spiffe_id: str | None, calls: list[str]
+    ) -> bool:
+        """Count the calls against the token's limit; False after sending the refusal."""
+        if self.token_uses is None or not isinstance(user, AuthenticatedUser):
+            return True
+        token = user.access_token
+        jti = (token.claims or {}).get("jti")
+        try:
+            if not isinstance(jti, str) or token.expires_at is None:
+                raise TokenUseError("token_call_limit_reached")
+            self.token_uses.consume(
+                jti, token.expires_at, len(calls), self.clock(), subject=token.subject or ""
+            )
+        except TokenUseError as exc:
+            reason = str(exc)
+            self.audit.write(
+                spiffe_id=spiffe_id, tool=",".join(calls), decision="deny", reason=reason
+            )
+            if reason in ("token_use_store_full", "token_use_store_unavailable"):
+                await _error(send, 503, "temporarily_unavailable", "token use store unavailable")
+            elif reason == "token_use_subject_limit_reached":
+                await _error(send, 429, "temporarily_unavailable", "token use quota reached")
+            else:
+                await _error(send, 401, "invalid_token", "access token call limit reached")
+            return False
+        return True
 
     async def _until_expiry(  # noqa: PLR0913
         self,
@@ -642,8 +761,10 @@ class Upstream:
     _expires_at: float = 0.0
     _lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
-    async def token(self) -> str:
+    async def token(self, *, discard: str | None = None) -> str:
         async with self._lock:
+            if discard is not None and self._token == discard:
+                self._token = None
             if self._token is None or time.time() >= self._expires_at - self.refresh_margin:
                 body = await fetch_access_token(
                     self.resource,
@@ -657,11 +778,7 @@ class Upstream:
                 self._expires_at = time.time() + int(body["expires_in"])
             return self._token
 
-    async def search(self, query: str) -> str:
-        try:
-            token = await self.token()
-        except TokenRequestError:
-            raise ToolError("upstream credential unavailable") from None
+    async def _call(self, token: str, query: str) -> str:
         return await call_tool(
             self.resource,
             token,
@@ -670,6 +787,19 @@ class Upstream:
             http=self.http,
             url_policy=self.url_policy,
         )
+
+    async def search(self, query: str) -> str:
+        try:
+            token = await self.token()
+            result = await self._call(token, query)
+            if result.startswith("HTTP 401:"):
+                # A cached token can outlive its signing key, for example after an issuer
+                # restart with an ephemeral key. Obtain one new token with this server's own
+                # SVID and try once more; a 403 or a second 401 is returned unchanged.
+                result = await self._call(await self.token(discard=token), query)
+            return result
+        except TokenRequestError:
+            raise ToolError("upstream credential unavailable") from None
 
 
 class ScopedToolsServer(MCPServer):
@@ -738,6 +868,10 @@ def create_app(  # noqa: PLR0913
     allowed_hosts: list[str] | None = None,
     upstream: Upstream | None = None,
     dpop_required: bool = False,
+    revocation: RevocationList | None = None,
+    token_uses: TokenUseCounter | None = None,
+    state: SharedState | None = None,
+    metrics: Metrics | None = None,
 ) -> Starlette:
     resource = resource.rstrip("/")
     mcp, tool_scopes = build_mcp(name, store or NotesStore(), upstream)
@@ -754,17 +888,25 @@ def create_app(  # noqa: PLR0913
     resource_url = AnyHttpUrl(resource)
     metadata_url = str(build_resource_metadata_url(resource_url))
     source = StaticJwks(jwks) if callable(jwks) else jwks
-    verifier = AudienceBoundVerifier(issuer=issuer, resource=resource, jwks=source, audit=audit)
+    verifier = AudienceBoundVerifier(
+        issuer=issuer,
+        resource=resource,
+        jwks=source,
+        audit=audit,
+        revocation=revocation,
+        require_jti=token_uses is not None,
+    )
     guarded = ToolScopeGuard(
         StreamableHTTPASGIApp(manager),
         tool_scopes,
         metadata_url,
         audit,
         scheme="DPoP" if dpop_required else "Bearer",
+        token_uses=token_uses,
     )
     endpoint = AuditedRequireAuth(guarded, metadata_url, audit, dpop=dpop_required)
     backend: AuthenticationBackend = (
-        DPoPAuthBackend(verifier, resource, audit)
+        DPoPAuthBackend(verifier, resource, audit, ProofReplayStore(shared=state))
         if dpop_required
         else BearerAuthBackend(verifier, resource_server_url=resource_url)
     )
@@ -794,10 +936,52 @@ def create_app(  # noqa: PLR0913
     async def protected_resource_metadata(_: Request) -> Response:
         return JSONResponse(prm)
 
+    async def healthz(_: Request) -> Response:
+        return JSONResponse({"status": "ok"})
+
+    async def readyz(_: Request) -> Response:
+        try:
+            _find_key(await source.get(), None)
+        except (JwksUnavailableError, JwksInvalidError):
+            return JSONResponse({"status": "unavailable"}, status_code=503)
+        if revocation is not None and not revocation.available:
+            return JSONResponse({"status": "revocation_unavailable"}, status_code=503)
+        if state is not None:
+            try:
+                state.ping()
+            except StateUnavailableError:
+                return JSONResponse({"status": "state_store_unavailable"}, status_code=503)
+        if getattr(source, "degraded", False):
+            return JSONResponse({"status": "degraded", "jwks": "stale"})
+        return JSONResponse({"status": "ok"})
+
+    async def metrics_endpoint(_: Request) -> Response:
+        if metrics is None:
+            return Response(status_code=404)
+        try:
+            await source.get()
+            jwks_up = 0.0 if getattr(source, "degraded", False) else 1.0
+        except (JwksUnavailableError, JwksInvalidError):
+            jwks_up = 0.0
+        text = await anyio.to_thread.run_sync(metrics.render, [("jwks", jwks_up)])
+        return Response(text, media_type=METRICS_CONTENT_TYPE)
+
+    if metrics is not None:
+        audit.metrics = metrics
+        if state is not None:
+            metrics.gauge("state_store", succeeds(state.ping))
+        if revocation is not None:
+            metrics.gauge("revocation", lambda: float(revocation.available))
+
     prm_path = urlsplit(metadata_url).path
+    if path in HEALTH_PATHS:
+        raise ValueError("resource path collides with a health endpoint")
     routes: list[Any] = [
         Route(path, endpoint=endpoint),
         Route(prm_path, endpoint=protected_resource_metadata, methods=["GET"]),
+        Route("/healthz", endpoint=healthz, methods=["GET"]),
+        Route("/readyz", endpoint=readyz, methods=["GET"]),
+        *([Route("/metrics", endpoint=metrics_endpoint, methods=["GET"])] if metrics else []),
     ]
     return Starlette(
         routes=routes,
@@ -810,7 +994,9 @@ def create_app(  # noqa: PLR0913
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="mcp-svid-notes", description="Notes MCP server (POC)")
+    parser = argparse.ArgumentParser(
+        prog="mcp-svid-notes", description="Notes MCP server (reference resource server)"
+    )
     parser.add_argument(
         "--name",
         default="notes",
@@ -827,6 +1013,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--port", type=int, default=8101, help="listen port")
     parser.add_argument(
         "--audit-log", type=Path, help="audit log file (JSON lines, appended), default stderr"
+    )
+    parser.add_argument(
+        "--audit-replica-id",
+        help="replica name written into every audit record; default HOSTNAME. "
+        "Each replica needs its own --audit-log file",
     )
     parser.add_argument(
         "--dpop-required",
@@ -851,8 +1042,49 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--socket", help="Workload API socket for the upstream SVID, default SPIFFE_ENDPOINT_SOCKET"
     )
+    parser.add_argument(
+        "--revocation-file",
+        type=Path,
+        help="YAML or JSON list of revoked token jti values and blocked SPIFFE IDs; fail closed",
+    )
+    parser.add_argument(
+        "--revocation-public-key",
+        type=Path,
+        help="Ed25519 PEM public key; the revocation file then needs a valid <file>.sig",
+    )
+    parser.add_argument(
+        "--revocation-poll-seconds",
+        type=poll_seconds_arg,
+        default=DEFAULT_REVOCATION_POLL_SECONDS,
+        help="maximum delay before a changed revocation file applies",
+    )
+    parser.add_argument(
+        "--max-calls-per-token",
+        type=_positive,
+        help="tool calls one access token jti may authorize on this server; default unlimited",
+    )
+    parser.add_argument(
+        "--token-use-cache-size",
+        type=_positive,
+        default=DEFAULT_TOKEN_USE_CACHE_SIZE,
+        help="live token jti entries kept for --max-calls-per-token; refuses new tokens when full",
+    )
     add_url_flags(parser)
+    add_tls_server_flags(parser)
+    add_state_flags(parser)
+    parser.add_argument(
+        "--metrics",
+        action="store_true",
+        help="serve Prometheus text metrics on /metrics (bounded labels, no identifiers)",
+    )
     return parser
+
+
+def _positive(value: str) -> int:
+    number = int(value)
+    if number < 1:
+        raise argparse.ArgumentTypeError("must be positive")
+    return number
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -872,16 +1104,40 @@ def main(argv: list[str] | None = None) -> None:
             svid_source=WorkloadApiSvidSource(socket_path=args.socket),
             url_policy=url_policy_from_args(args),
         )
+    state = state_from_args(args, parser)
     app = create_app(
         name=args.name,
         resource=args.resource,
         issuer=issuer,
-        jwks=JwksFetcher(args.jwks_uri or f"{issuer}/jwks.json"),
-        audit=AuditLog(path=args.audit_log, component=f"mcp_server:{args.name}"),
+        jwks=JwksFetcher(
+            args.jwks_uri or f"{issuer}/jwks.json", verify=client_context(args.ca_file)
+        ),
+        audit=AuditLog(
+            path=args.audit_log,
+            component=f"mcp_server:{args.name}",
+            replica_id=args.audit_replica_id or default_replica_id(),
+        ),
         upstream=upstream,
         dpop_required=args.dpop_required,
+        state=state,
+        metrics=Metrics() if args.metrics else None,
+        revocation=(
+            RevocationList.load(
+                args.revocation_file,
+                args.revocation_poll_seconds,
+                load_revocation_key(args.revocation_public_key),
+            )
+            if args.revocation_file
+            else None
+        ),
+        token_uses=(
+            TokenUseCounter(args.max_calls_per_token, args.token_use_cache_size, shared=state)
+            if args.max_calls_per_token
+            else None
+        ),
     )
-    uvicorn.run(app, host=args.host, port=args.port)
+    tls = tls_server_kwargs(args, parser, public_url=args.resource)
+    uvicorn.run(app, host=args.host, port=args.port, **tls)
 
 
 if __name__ == "__main__":
