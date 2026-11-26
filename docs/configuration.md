@@ -30,6 +30,8 @@ JWT-SVID to access token bridge (POC)
 | `--token-requests-per-second` | `50` | Per-process token endpoint requests per fixed one-second window |
 | `--subject-requests-per-second` | `10` | Exchanges per authorized subject per fixed one-second window |
 | `--signing-rotation-seconds` | `3600` | Planned signing rotation interval; zero disables, minimum 60 seconds |
+| `--revocation-file` | none | YAML or JSON list of blocked SPIFFE IDs (and revoked jti) refused new tokens |
+| `--revocation-poll-seconds` | `5.0` | Maximum delay before a changed revocation file applies |
 | `--tls-cert` | none | PEM server certificate chain; enables HTTPS with --tls-key |
 | `--tls-key` | none | PEM private key for --tls-cert |
 | `--tls-client-ca` | none | PEM CA bundle; when set, every client must present a certificate it signed (mTLS) |
@@ -64,6 +66,10 @@ Notes MCP server (POC)
 | `--upstream-scope` | `notes:read` | Scope requested for the upstream token |
 | `--trusted-issuer` | none | Authorization server allowed for the upstream token; required with an upstream |
 | `--socket` | none | Workload API socket for the upstream SVID, default SPIFFE_ENDPOINT_SOCKET |
+| `--revocation-file` | none | YAML or JSON list of revoked token jti values and blocked SPIFFE IDs; fail closed |
+| `--revocation-poll-seconds` | `5.0` | Maximum delay before a changed revocation file applies |
+| `--max-calls-per-token` | none | Tool calls one access token jti may authorize on this server; default unlimited |
+| `--token-use-cache-size` | `100000` | Live token jti entries kept for --max-calls-per-token; refuses new tokens when full |
 | `--allow-http` | off | Dev only: accept plain http URLs for discovery, token requests and tool calls |
 | `--allow-private-network` | off | Dev only: accept hosts that resolve to private, loopback or link-local addresses |
 | `--ca-file` | none | PEM CA bundle that replaces the system trust store for outbound HTTPS |
@@ -170,6 +176,15 @@ clients:
 | `clients` | list | One entry per SPIFFE ID |
 | `clients[].spiffe_id` | string, required | Exact SPIFFE ID (SVID `sub`) |
 | `clients[].resources` | map | Resource URI to list of allowed scopes. Trailing slashes are ignored when matching. |
+
+## Revocation file
+
+Read by `--revocation-file` on the token endpoint and MCP server. Unknown keys, a file over 1048576 bytes or more than 100000 entries make every check fail closed.
+
+| Key | Type | Meaning |
+|---|---|---|
+| `revoked_jti` | list of strings | Access token `jti` values refused before their `exp` |
+| `blocked_spiffe_ids` | list of strings | SPIFFE IDs refused as token subject, client or actor, and refused new tokens |
 <!-- END GENERATED: config -->
 
 ## Behaviour notes

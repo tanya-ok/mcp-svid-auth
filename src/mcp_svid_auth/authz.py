@@ -37,6 +37,11 @@ from mcp_svid_auth.budgets import WindowBudget
 from mcp_svid_auth.dpop import DPOP_ALG, DPoPError, ProofReplayStore, VerifiedProof, verify_proof
 from mcp_svid_auth.errors import AuthError
 from mcp_svid_auth.policy import Policy
+from mcp_svid_auth.revocation import (
+    DEFAULT_REVOCATION_POLL_SECONDS,
+    UNAVAILABLE,
+    RevocationList,
+)
 from mcp_svid_auth.spiffe_keys import (
     JWT_SVID_ALGORITHMS,
     KeyResolver,
@@ -164,6 +169,7 @@ class AuthzServer:
     dpop_required: bool = False
     proof_replay: ProofReplayStore = field(default_factory=ProofReplayStore)
     policy_path: Path | None = None
+    revocation: RevocationList | None = None
     _policy_digest: str | None = None
     _reload_lock: threading.Lock = field(default_factory=threading.Lock)
 
@@ -378,6 +384,11 @@ class AuthzServer:
             raise AuthError(
                 "invalid_grant", "subject token invalid", 400, type(exc).__name__
             ) from exc
+        self._check_revocation(
+            claims.get("jti") if isinstance(claims.get("jti"), str) else None,
+            [str(claims["sub"]), str(claims.get("client_id", claims["sub"]))],
+            "invalid_grant",
+        )
         if "act" in claims:
             raise AuthError("invalid_request", "chained delegation is not supported")
         if "cnf" in claims:
@@ -386,6 +397,15 @@ class AuthzServer:
         if not isinstance(claims["aud"], str) or not isinstance(claims["scope"], str):
             raise AuthError("invalid_grant", "subject token invalid")
         return claims
+
+    def _check_revocation(self, jti: str | None, subjects: list[str], code: str) -> None:
+        if self.revocation is None:
+            return
+        denied = self.revocation.check(jti=jti, subjects=subjects)
+        if denied == UNAVAILABLE:
+            raise AuthError("temporarily_unavailable", "revocation state unavailable", 503)
+        if denied is not None:
+            raise AuthError(code, "credential revoked", 401 if code == "invalid_client" else 400)
 
     def _delegate(
         self, form: dict[str, str], actor: str, resource: str, policy: Policy, expiry: int
@@ -439,6 +459,7 @@ class AuthzServer:
         client_id = form.get("client_id")
         if client_id is not None and client_id != spiffe_id:
             raise AuthError("invalid_client", "client_id does not match SVID", 401)
+        self._check_revocation(None, [spiffe_id], "invalid_client")
         proof = self._verify_token_proof(dpop_proofs) if self.dpop_required else None
         now = int(time.time())
         subject = spiffe_id
@@ -566,6 +587,8 @@ class AuthzServer:
             # A failed policy reload denies every request; report that as not ready.
             if not self.policy.grants:
                 return JSONResponse({"status": "policy_unavailable"}, status_code=503)
+            if self.revocation is not None and not self.revocation.available:
+                return JSONResponse({"status": "revocation_unavailable"}, status_code=503)
             return JSONResponse({"status": "ok"})
 
         return Starlette(
@@ -766,6 +789,17 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_SIGNING_ROTATION_SECONDS,
         help="planned signing rotation interval; zero disables, minimum 60 seconds",
     )
+    parser.add_argument(
+        "--revocation-file",
+        type=Path,
+        help="YAML or JSON list of blocked SPIFFE IDs (and revoked jti) refused new tokens",
+    )
+    parser.add_argument(
+        "--revocation-poll-seconds",
+        type=float,
+        default=DEFAULT_REVOCATION_POLL_SECONDS,
+        help="maximum delay before a changed revocation file applies",
+    )
     add_tls_server_flags(parser)
     return parser
 
@@ -797,6 +831,11 @@ def main(argv: list[str] | None = None) -> None:
         token_exchange=args.token_exchange,
         dpop_required=args.dpop_required,
         policy_path=args.policy,
+        revocation=(
+            RevocationList.load(args.revocation_file, args.revocation_poll_seconds)
+            if args.revocation_file
+            else None
+        ),
     )
     install_policy_reload(server, args.policy_poll_seconds)
     uvicorn.run(server.app(), host=args.host, port=args.port, **tls)
