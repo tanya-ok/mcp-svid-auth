@@ -53,7 +53,8 @@ class Clock:
 
 
 def _write(path: Path, **lists: list[str]) -> None:
-    path.write_text(json.dumps(lists), encoding="utf-8")
+    content = {"revoked_jti": [], "blocked_spiffe_ids": [], **lists}
+    path.write_text(json.dumps(content), encoding="utf-8")
 
 
 def _revocations(path: Path, clock: Clock, **lists: list[str]) -> RevocationList:
@@ -114,7 +115,7 @@ def test_deleted_file_fails_closed(tmp_path: Path) -> None:
 
 
 def test_startup_refuses_a_missing_invalid_or_oversized_file(tmp_path: Path) -> None:
-    with pytest.raises(OSError):
+    with pytest.raises(ValueError, match="cannot be opened"):
         RevocationList.load(tmp_path / "missing.json")
     bad = tmp_path / "bad.json"
     bad.write_text('{"revoked": []}', encoding="utf-8")
@@ -125,9 +126,24 @@ def test_startup_refuses_a_missing_invalid_or_oversized_file(tmp_path: Path) -> 
         RevocationList.load(bad)
 
 
-def test_empty_file_revokes_nothing(tmp_path: Path) -> None:
+@pytest.mark.parametrize("content", ["", "  \n", "{}", '{"revoked_jti": []}'])
+def test_empty_or_partial_file_is_refused_not_read_as_revoke_nothing(
+    tmp_path: Path, content: str
+) -> None:
     path = tmp_path / "r.yaml"
-    path.write_text("", encoding="utf-8")
+    path.write_text(content, encoding="utf-8")
+    with pytest.raises(ValueError, match="known keys"):
+        RevocationList.load(path)
+    clock = Clock()
+    revocations = _revocations(tmp_path / "ok.json", clock)
+    revocations.path.write_text(content, encoding="utf-8")
+    clock.now += 5
+    assert revocations.check(jti="j", subjects=[RESEARCH]) == UNAVAILABLE
+
+
+def test_explicit_empty_lists_revoke_nothing(tmp_path: Path) -> None:
+    path = tmp_path / "r.yaml"
+    path.write_text("revoked_jti: []\nblocked_spiffe_ids:\n", encoding="utf-8")
     assert RevocationList.load(path).check(jti="j", subjects=[RESEARCH]) is None
 
 

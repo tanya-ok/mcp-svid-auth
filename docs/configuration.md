@@ -33,6 +33,7 @@ JWT-SVID to access token bridge
 | `--signing-key-file` | none | PEM P-256 private key, owner-only permissions, kept across restarts; needs --signing-rotation-seconds 0 |
 | `--verification-key-file` | `[]` | PEM public key of a previous signing key, published for overlap; repeatable |
 | `--revocation-file` | none | YAML or JSON list of blocked SPIFFE IDs (and revoked jti) refused new tokens |
+| `--revocation-public-key` | none | Ed25519 PEM public key; the revocation file then needs a valid &lt;file&gt;.sig |
 | `--revocation-poll-seconds` | `5.0` | Maximum delay before a changed revocation file applies |
 | `--tls-cert` | none | PEM server certificate chain; enables HTTPS with --tls-key |
 | `--tls-key` | none | PEM private key for --tls-cert |
@@ -75,6 +76,7 @@ Notes MCP server (reference resource server)
 | `--trusted-issuer` | none | Authorization server allowed for the upstream token; required with an upstream |
 | `--socket` | none | Workload API socket for the upstream SVID, default SPIFFE_ENDPOINT_SOCKET |
 | `--revocation-file` | none | YAML or JSON list of revoked token jti values and blocked SPIFFE IDs; fail closed |
+| `--revocation-public-key` | none | Ed25519 PEM public key; the revocation file then needs a valid &lt;file&gt;.sig |
 | `--revocation-poll-seconds` | `5.0` | Maximum delay before a changed revocation file applies |
 | `--max-calls-per-token` | none | Tool calls one access token jti may authorize on this server; default unlimited |
 | `--token-use-cache-size` | `100000` | Live token jti entries kept for --max-calls-per-token; refuses new tokens when full |

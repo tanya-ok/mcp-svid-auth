@@ -76,6 +76,8 @@ from mcp_svid_auth.revocation import (
     RevocationList,
     TokenUseCounter,
     TokenUseError,
+    load_revocation_key,
+    poll_seconds_arg,
 )
 from mcp_svid_auth.spiffe_keys import SvidSource, WorkloadApiSvidSource
 from mcp_svid_auth.state import (
@@ -501,7 +503,9 @@ class ToolScopeGuard:
         try:
             if not isinstance(jti, str) or token.expires_at is None:
                 raise TokenUseError("token_call_limit_reached")
-            self.token_uses.consume(jti, token.expires_at, len(calls), self.clock())
+            self.token_uses.consume(
+                jti, token.expires_at, len(calls), self.clock(), subject=token.subject or ""
+            )
         except TokenUseError as exc:
             reason = str(exc)
             self.audit.write(
@@ -509,6 +513,8 @@ class ToolScopeGuard:
             )
             if reason in ("token_use_store_full", "token_use_store_unavailable"):
                 await _error(send, 503, "temporarily_unavailable", "token use store unavailable")
+            elif reason == "token_use_subject_limit_reached":
+                await _error(send, 429, "temporarily_unavailable", "token use quota reached")
             else:
                 await _error(send, 401, "invalid_token", "access token call limit reached")
             return False
@@ -984,8 +990,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="YAML or JSON list of revoked token jti values and blocked SPIFFE IDs; fail closed",
     )
     parser.add_argument(
+        "--revocation-public-key",
+        type=Path,
+        help="Ed25519 PEM public key; the revocation file then needs a valid <file>.sig",
+    )
+    parser.add_argument(
         "--revocation-poll-seconds",
-        type=float,
+        type=poll_seconds_arg,
         default=DEFAULT_REVOCATION_POLL_SECONDS,
         help="maximum delay before a changed revocation file applies",
     )
@@ -1043,7 +1054,11 @@ def main(argv: list[str] | None = None) -> None:
         dpop_required=args.dpop_required,
         state=state,
         revocation=(
-            RevocationList.load(args.revocation_file, args.revocation_poll_seconds)
+            RevocationList.load(
+                args.revocation_file,
+                args.revocation_poll_seconds,
+                load_revocation_key(args.revocation_public_key),
+            )
             if args.revocation_file
             else None
         ),

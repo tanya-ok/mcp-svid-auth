@@ -41,6 +41,8 @@ from mcp_svid_auth.revocation import (
     DEFAULT_REVOCATION_POLL_SECONDS,
     UNAVAILABLE,
     RevocationList,
+    load_revocation_key,
+    poll_seconds_arg,
 )
 from mcp_svid_auth.signing_keys import (
     MAX_PUBLISHED_KEYS,
@@ -847,8 +849,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="YAML or JSON list of blocked SPIFFE IDs (and revoked jti) refused new tokens",
     )
     parser.add_argument(
+        "--revocation-public-key",
+        type=Path,
+        help="Ed25519 PEM public key; the revocation file then needs a valid <file>.sig",
+    )
+    parser.add_argument(
         "--revocation-poll-seconds",
-        type=float,
+        type=poll_seconds_arg,
         default=DEFAULT_REVOCATION_POLL_SECONDS,
         help="maximum delay before a changed revocation file applies",
     )
@@ -912,7 +919,11 @@ def main(argv: list[str] | None = None) -> None:
         dpop_required=args.dpop_required,
         policy_path=args.policy,
         revocation=(
-            RevocationList.load(args.revocation_file, args.revocation_poll_seconds)
+            RevocationList.load(
+                args.revocation_file,
+                args.revocation_poll_seconds,
+                load_revocation_key(args.revocation_public_key),
+            )
             if args.revocation_file
             else None
         ),
