@@ -71,6 +71,10 @@ SCENARIOS = (
     "Disallowed client certificate refused",
     "Missing client certificate refused",
     "FHIR audit caller and safe output",
+    "Unprivileged pod launch with an allowed ServiceAccount denied",
+    "Unprivileged Deployment with an allowed ServiceAccount denied",
+    "ServiceAccount outside the allow list denied",
+    "Operator launch with an allowed ServiceAccount admitted",
 )
 
 
@@ -124,7 +128,7 @@ def demo_result(path: Path) -> dict[str, Any] | None:
         return None
     at = timestamp(item.get("timestamp"))
     results = item.get("results")
-    if at is None or not isinstance(results, list) or len(results) > 18:
+    if at is None or not isinstance(results, list) or len(results) > len(SCENARIOS):
         return None
     completed = {
         row.get("scenario")
@@ -133,7 +137,7 @@ def demo_result(path: Path) -> dict[str, Any] | None:
     }
     return {
         "at": at,
-        "passed": item.get("passed") is True and completed == set(range(1, 19)),
+        "passed": item.get("passed") is True and completed == set(range(1, len(SCENARIOS) + 1)),
         "results": [
             {"number": number, "title": title, "passed": number in completed}
             for number, title in enumerate(SCENARIOS, 1)

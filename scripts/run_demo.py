@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from mcp_svid_auth.audit import create_checkpoint, verify_lines
-from scripts.kubernetes_demo import compose_command, repo_path
+from scripts.kubernetes_demo import admission_verdicts, compose_command, repo_path
 from scripts.lab_runtime import DemoRuntimeError
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -380,6 +380,10 @@ def scenarios(record: Any) -> None:  # noqa: PLR0915 - numbered demonstration
         "FHIR audit verification failed",
     )
     record(18, "FHIR audit caller and data minimization verified")
+    verdicts = admission_verdicts()
+    for number, (description, passed) in enumerate(verdicts, start=19):
+        require(passed, "admission check failed: " + description)
+        record(number, "ServiceAccount admission: " + description)
 
 
 def main() -> None:

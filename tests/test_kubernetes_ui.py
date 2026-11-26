@@ -376,7 +376,7 @@ def test_demo_projection_uses_known_titles_and_requires_all_scenarios(tmp_path: 
     path.write_text(json.dumps(report))
     result = data.demo_result(path)
     assert result is not None and result["passed"] is False
-    assert len(result["results"]) == 18
+    assert len(result["results"]) == 22
     assert "sensitive" not in json.dumps(result)
     assert "private" not in json.dumps(result)
 

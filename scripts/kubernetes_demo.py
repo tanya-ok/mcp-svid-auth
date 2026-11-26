@@ -22,6 +22,7 @@ from typing import Any
 import yaml
 
 from mcp_svid_auth.policy import Policy
+from scripts import lab_admission
 from scripts.lab_runtime import SERVICES, DemoRuntimeError
 from scripts.local_identity_profile import ISOLATED
 
@@ -518,19 +519,7 @@ def application_pod(name: str, image: str, command: list[str]) -> dict[str, Any]
 
 
 def applications(images: dict[str, str]) -> list[dict[str, Any]]:
-    documents = [
-        resource("ServiceAccount", name)
-        for name in (
-            "authz",
-            "notes-a",
-            "notes-b",
-            "notes-rogue",
-            "agent-research",
-            "agent-intruder",
-            "agent-impostor",
-            "fhir",
-        )
-    ]
+    documents = [resource("ServiceAccount", name) for name in lab_admission.APPLICATION_ACCOUNTS]
     for name in ("authz", "authz-strict", "notes-a", "notes-b", "notes-rogue"):
         command = [str(arg) for arg in SERVICES[name]["command"]]
         if name.startswith("authz"):
@@ -610,6 +599,29 @@ def register() -> None:
         server(args)
 
 
+def wait_for_admission(*, timeout: float = 90) -> None:
+    """The API server enforces a new policy shortly after it is stored."""
+    deadline = time.monotonic() + timeout
+    while not lab_admission.denied_by_policy(
+        lab_admission.attempt(kube, lab_admission.probe_pod("default"), None)
+    ):
+        if time.monotonic() >= deadline:
+            raise DemoRuntimeError("ServiceAccount admission policy is not enforced")
+        time.sleep(2)
+
+
+def admission_verdicts() -> list[tuple[str, bool]]:
+    return lab_admission.check(kube, apply)
+
+
+def report_admission() -> None:
+    verdicts = admission_verdicts()
+    for description, passed in verdicts:
+        print(("PASS " if passed else "FAIL ") + description, flush=True)
+    if not all(passed for _, passed in verdicts):
+        raise DemoRuntimeError("ServiceAccount admission policy check failed")
+
+
 def owned_namespace(name: str) -> bool:
     result = kube(["get", "namespace", name, "--ignore-not-found", "-o", "json"])
     checked(result)
@@ -640,6 +652,8 @@ def up() -> None:
             for name in (NAMESPACE, "spire-system")
         ]
     )
+    apply(lab_admission.documents())
+    wait_for_admission()
     apply(spire_server_documents())
     checked(
         kube(
@@ -736,7 +750,12 @@ def down() -> None:
     ACCOUNTS.unlink(missing_ok=True)
     if selected:
         checked(kube(["delete", "namespace", *selected, "--timeout=90s"], timeout=120))
-    for kind in ("clusterrolebinding", "clusterrole"):
+    for kind in (
+        "validatingadmissionpolicybinding",
+        "validatingadmissionpolicy",
+        "clusterrolebinding",
+        "clusterrole",
+    ):
         checked(
             kube(
                 [
@@ -763,6 +782,7 @@ def render() -> None:
     path.write_text(
         yaml.safe_dump_all(
             [
+                *lab_admission.documents(),
                 *spire_server_documents(),
                 *spire_agent_documents("PUBLIC BUNDLE GENERATED AT RUNTIME"),
                 *applications(images),
@@ -778,7 +798,16 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "operation",
-        choices=("runtime-up", "runtime-stop", "up", "down", "render", "build", "register"),
+        choices=(
+            "runtime-up",
+            "runtime-stop",
+            "up",
+            "down",
+            "render",
+            "build",
+            "register",
+            "admission-check",
+        ),
     )
     operation = parser.parse_args().operation
     try:
@@ -798,6 +827,8 @@ def main() -> None:
             build()
         elif operation == "register":
             register()
+        elif operation == "admission-check":
+            report_admission()
         else:
             render()
     except DemoRuntimeError as exc:
