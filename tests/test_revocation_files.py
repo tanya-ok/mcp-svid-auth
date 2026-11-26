@@ -150,3 +150,14 @@ def test_one_subject_cannot_fill_the_token_use_store() -> None:
     counter.consume("noisy-0", 100, 1, 1, subject="noisy")
     counter.consume("noisy-4", 200, 1, 150, subject="noisy")
     assert len(counter) == 1
+
+
+def test_wrapped_base64_signature_is_accepted(tmp_path: Path) -> None:
+    key = Ed25519PrivateKey.generate()
+    path = tmp_path / "r.json"
+    path.write_bytes(REVOKED)
+    encoded = base64.b64encode(key.sign(REVOKED))
+    wrapped = encoded[:76] + b"\n" + encoded[76:] + b"\n"
+    path.with_name("r.json.sig").write_bytes(wrapped)
+    loaded = RevocationList.load(path, public_key=key.public_key())
+    assert loaded.check(jti="j1", subjects=[]) == REVOKED_TOKEN

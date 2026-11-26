@@ -134,7 +134,8 @@ class RevocationList:
         data = read_file(self.path, max_bytes=MAX_REVOCATION_FILE_BYTES)
         if self.public_key is not None:
             signature_path = self.path.with_name(self.path.name + ".sig")
-            encoded = read_file(signature_path, max_bytes=512).strip()
+            # Accept wrapped base64 output (for example GNU `base64` at 76 columns).
+            encoded = b"".join(read_file(signature_path, max_bytes=512).split())
             try:
                 self.public_key.verify(base64.b64decode(encoded, validate=True), data)
             except (InvalidSignature, ValueError) as exc:
