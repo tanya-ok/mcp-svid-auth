@@ -22,6 +22,10 @@ SPIFFE JWT-SVIDs used as OAuth client credentials for MCP servers, so agents nev
 | `src/mcp_svid_auth/tls.py` | HTTPS and mTLS listener flags, private CA for outbound clients |
 | `src/mcp_svid_auth/revocation.py` | Revocation file and per-token call limits |
 | `src/mcp_svid_auth/signing_keys.py` | Persistent signing key and published previous keys |
+| `src/mcp_svid_auth/signers.py` | Signer seam and OpenBao or Vault transit signer |
+| `src/mcp_svid_auth/state.py` | Shared replay and rate-limit state (Valkey or Redis) |
+| `src/mcp_svid_auth/metrics.py` | Prometheus metrics with a fixed reason vocabulary |
+| `src/mcp_svid_auth/files.py` | Bounded, no-follow file reads for keys and configuration |
 | `deploy/` | Shared Kubernetes/containerd lab in CNCF Lima, SPIRE registration |
 
 ## Commands
@@ -29,6 +33,7 @@ SPIFFE JWT-SVIDs used as OAuth client credentials for MCP servers, so agents nev
 | Task | Command |
 |---|---|
 | Install | `uv sync --locked` |
+| Optional test servers | `redis-server` or `valkey-server`, and `vault` or `bao` on `PATH`; their tests skip otherwise |
 | Lint, types, tests | `make check` |
 | Integration demo (needs running Lima VM) | `make demo`, then `make down` |
 | Docs build | `uv run --locked --only-group docs zensical build --strict --clean` |

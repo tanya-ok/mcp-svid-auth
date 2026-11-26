@@ -9,7 +9,7 @@ uv sync --locked
 make check
 ```
 
-`make check` runs ruff, formatting, strict mypy, the configuration docs drift check and pytest. It must pass before every commit. Changes to `deploy/`, token formats or the auth flow also need the lab demo described in [docs/kubernetes-lab.md](docs/kubernetes-lab.md).
+`make check` runs ruff, formatting, strict mypy, the configuration docs drift check and pytest. Tests for the shared store and the transit signer start a local `valkey-server` or `redis-server` and a `bao` or `vault` dev server when those binaries are on `PATH`, and skip otherwise. It must pass before every commit. Changes to `deploy/`, token formats or the auth flow also need the lab demo described in [docs/kubernetes-lab.md](docs/kubernetes-lab.md).
 
 ## Rules
 

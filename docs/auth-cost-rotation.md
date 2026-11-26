@@ -1,5 +1,8 @@
 # Cost budgets and planned signing rotation
 
+!!! note "Dated record, superseded in part on 2026-11-26"
+    The in-process rotation described here now runs only with `--dev-ephemeral-signing-key`. Production key sources (`--signing-key-file`, transit signer) and budgets shared through `--state-store-url` are described in [operations](operations.md). The results below are unchanged historical evidence.
+
 These changes implement `svid-xoz`. They preserve single-resource ES256 `at+jwt`
 tokens and runtime-generated private keys. No credential is persisted or exposed
 by an administrative rotation endpoint.

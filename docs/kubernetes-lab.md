@@ -163,7 +163,13 @@ configured VM cap remains 4 GiB. Safe local results remain under ignored
 This is a single-node lab, without production availability, a managed secrets
 store, durable audit retention or a production FHIR backend. The OAuth issuer
 uses explicitly local HTTP; the FHIR transport uses real mTLS. SMART-on-FHIR and
-KMS implementations remain out of scope.
+a cloud KMS remain out of scope for the lab.
+
+Since 2026-11-26 the lab authz instances run with `--dev-ephemeral-signing-key`,
+because `mcp-svid-authz` now requires an explicit key source. The lab has not
+been run with that change, and it does not yet use the HTTPS listeners, the
+shared state store, the transit signer or the revocation file. The VM name is
+fixed to `security-lab`. See [production readiness](production-readiness.md).
 
 Anyone who controls the cluster or may create workloads with an authorized
 ServiceAccount can assume that identity. The SPIRE agent runs as root with host

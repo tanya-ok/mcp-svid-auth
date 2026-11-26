@@ -52,6 +52,8 @@ Ranked by security value per effort after a cross-model review. Every denial tes
 | 3 | Key and trust lifecycle tests | Signing key rotation, SPIRE bundle and JWKS refresh, a stale key after rotation, and clock skew at the edges each have an asserted scenario |
 | Deferred | Two-hop delegation with per-hop attenuation and a chain-splicing test | Only with a concrete two-hop workflow. Until then the current refusal of chains and `actor_token` stays |
 
+Status on 2026-11-26: items 1 and 2 are implemented (`--dpop-required`, `--revocation-file` with a tested poll bound, blocked IDs stop issuance and exchange, unreadable state fails closed; no RFC 7009 endpoint). Item 3 is partly covered: transit key rotation, JWKS refresh and stale-key serving have tests; a combined lifecycle scenario in the lab does not exist yet.
+
 Residual risk stays explicit: a compromised agent can still misuse its own grant. DPoP and revocation narrow token theft and response time; they do not detect intent.
 
 ## Task tracking checkpoint

@@ -1,5 +1,8 @@
 # Local publication validation
 
+!!! note "Dated record, superseded on 2026-11-26"
+    This page records the 2026-10-13 validation and is not updated. The current state is in [production readiness](production-readiness.md) and the README Status table.
+
 Updated on **2026-10-13**. The repository is public on GitHub and its
 documentation is built for GitHub Pages. No release, package upload or remote
 service deployment was performed. This is a checked proof of concept and makes
