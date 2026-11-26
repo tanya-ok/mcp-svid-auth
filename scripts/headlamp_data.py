@@ -47,8 +47,8 @@ IDENTITY_SERVICES = (
 )
 CALLERS = {"spiffe://example.org/" + identity for identity, _ in IDENTITIES}
 RESOURCES = {
-    "http://notes-a:8101/mcp",
-    "http://notes-b:8102/mcp",
+    "https://notes-a:8101/mcp",
+    "https://notes-b:8102/mcp",
     "https://fhir.security-lab.svc.cluster.local:8443/mcp",
 }
 SCOPES = {"notes:read", "notes:write", "fhir:read"}

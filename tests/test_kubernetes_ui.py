@@ -426,7 +426,7 @@ def test_ui_policy_is_actual_file_and_refuses_unknown_values(tmp_path: Path) -> 
     path.write_text(
         "trust_domain: example.org\nclients:\n"
         "  - spiffe_id: spiffe://example.org/agent/research\n"
-        "    resources:\n      http://notes-b:8102/mcp: [notes:read]\n"
+        "    resources:\n      https://notes-b:8102/mcp: [notes:read]\n"
     )
     assert data.permissions(path)[0]["scopes"] == ["notes:read"]
     path.write_text(

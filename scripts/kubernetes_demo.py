@@ -22,7 +22,7 @@ from typing import Any
 import yaml
 
 from mcp_svid_auth.policy import Policy
-from scripts import lab_admission
+from scripts import lab_admission, lab_tls
 from scripts.lab_runtime import SERVICES, DemoRuntimeError
 from scripts.local_identity_profile import ISOLATED
 
@@ -263,6 +263,37 @@ def build() -> dict[str, str]:
 # Build inputs that newer bridge revisions need; absent in older ones, so copied only if present.
 BUILD_EXTRAS = {"mcp-spiffe-bridge": ("tsconfig.build.json", "scripts/build-cjs-types.mjs")}
 
+# The FHIR repository pins the lab issuer and one resource to plain HTTP. The staged copy,
+# never the checkout, moves them to HTTPS and trusts the lab CA with verification kept on.
+FHIR_TLS_EDITS: dict[str, tuple[tuple[str, str], ...]] = {
+    "fhir-gateway.mjs": (
+        ('const issuer = "http://authz:8100";', 'const issuer = "https://authz:8100";'),
+    ),
+    "probe_fhir.py": (
+        ('ISSUER = "http://authz:8100"', 'ISSUER = "https://authz:8100"'),
+        ('"http://notes-a:8101/mcp"', '"https://notes-a:8101/mcp"'),
+        (
+            "        timeout=10,\n        trust_env=False,\n        data={",
+            "        timeout=10,\n        trust_env=False,\n"
+            f'        verify=ssl.create_default_context(cafile="{lab_tls.CA_FILE}"),\n'
+            "        data={",
+        ),
+    ),
+}
+
+
+def adapt_fhir_sources(directory: Path) -> None:
+    for filename, edits in FHIR_TLS_EDITS.items():
+        path = directory / filename
+        text = path.read_text()
+        for old, new in edits:
+            if new in text:
+                continue
+            if text.count(old) != 1:
+                raise DemoRuntimeError("FHIR lab sources changed; update the TLS edits")
+            text = text.replace(old, new)
+        path.write_text(text)
+
 
 def build_from_context(context: Path) -> dict[str, str]:
     # Copy an explicit source inventory, excluding Git, local secrets and node_modules.
@@ -292,6 +323,7 @@ def build_from_context(context: Path) -> dict[str, str]:
             shutil.copytree(
                 source / "deploy/kubernetes", destination / "deploy/kubernetes", dirs_exist_ok=True
             )
+    adapt_fhir_sources(context / "hipaa-fhir-mcp" / "deploy" / "kubernetes")
     shutil.copytree(CONFIG, context / REPOS[0] / "deploy/kubernetes", dirs_exist_ok=True)
     for filename in ("probe_svid.py", "probe_mtls.py"):
         shutil.copyfile(DEPLOY / filename, context / REPOS[0] / "deploy" / filename)
@@ -478,7 +510,9 @@ def application_pod(name: str, image: str, command: list[str]) -> dict[str, Any]
         "imagePullPolicy": "Never",
         "command": command,
         "env": [
-            {"name": "SPIFFE_ENDPOINT_SOCKET", "value": "unix:///run/spire/sockets/agent.sock"}
+            {"name": "SPIFFE_ENDPOINT_SOCKET", "value": "unix:///run/spire/sockets/agent.sock"},
+            {"name": "SVID_LAB_CA_FILE", "value": lab_tls.CA_FILE},
+            {"name": "NODE_EXTRA_CA_CERTS", "value": lab_tls.CA_FILE},
         ],
         "resources": {
             "requests": {"cpu": "25m", "memory": "64Mi"},
@@ -496,6 +530,7 @@ def application_pod(name: str, image: str, command: list[str]) -> dict[str, Any]
         "volumeMounts": [
             {"name": "sockets", "mountPath": "/run/spire/sockets", "readOnly": True},
             {"name": "tmp", "mountPath": "/tmp"},  # noqa: S108 - isolated per-pod emptyDir
+            {"name": "ca", "mountPath": lab_tls.CA_MOUNT, "readOnly": True},
         ],
     }
     pod: dict[str, Any] = {
@@ -506,8 +541,19 @@ def application_pod(name: str, image: str, command: list[str]) -> dict[str, Any]
         "volumes": [
             {"name": "sockets", "hostPath": {"path": SOCKET, "type": "Directory"}},
             {"name": "tmp", "emptyDir": {"medium": "Memory", "sizeLimit": "16Mi"}},
+            {"name": "ca", "configMap": {"name": lab_tls.CA_CONFIGMAP}},
         ],
     }
+    if name in lab_tls.SERVERS:
+        container["volumeMounts"].append(
+            {"name": "tls", "mountPath": lab_tls.TLS_MOUNT, "readOnly": True}
+        )
+        pod["volumes"].append(
+            {
+                "name": "tls",
+                "secret": {"secretName": lab_tls.secret_name(name), "defaultMode": 0o440},
+            }
+        )
     if name.startswith("authz"):
         container["volumeMounts"].append(
             {"name": "policy", "mountPath": "/policy", "readOnly": True}
@@ -654,6 +700,7 @@ def up() -> None:
     )
     apply(lab_admission.documents())
     wait_for_admission()
+    apply(lab_tls.documents())
     apply(spire_server_documents())
     checked(
         kube(
@@ -783,6 +830,7 @@ def render() -> None:
         yaml.safe_dump_all(
             [
                 *lab_admission.documents(),
+                *lab_tls.documents(placeholder=True),
                 *spire_server_documents(),
                 *spire_agent_documents("PUBLIC BUNDLE GENERATED AT RUNTIME"),
                 *applications(images),

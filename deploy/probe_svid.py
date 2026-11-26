@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import sys
 import time
+from pathlib import Path
 
 import httpx2
 import jwt
@@ -13,9 +15,13 @@ from spiffe import WorkloadApiClient
 
 from mcp_svid_auth.agent_client import UrlPolicy, call_tool
 from mcp_svid_auth.authz import CLIENT_ASSERTION_TYPE
+from mcp_svid_auth.tls import client_context
 
-ISSUER = "http://authz:8100"
-RESOURCE = "http://notes-a:8101/mcp"
+ISSUER = "https://authz:8100"
+RESOURCE = "https://notes-a:8101/mcp"
+# Verification stays on; the lab CA replaces the system trust store.
+VERIFY = client_context(Path(os.environ.get("SVID_LAB_CA_FILE", "/tls-ca/ca.crt")))
+POLICY = UrlPolicy(private_hosts=frozenset({"notes-a", "notes-b"}), tls_verify=VERIFY)
 
 
 def svid(issuer: str) -> str:
@@ -28,6 +34,7 @@ def post(assertion: str, issuer: str) -> httpx2.Response:
         issuer + "/token",
         timeout=10,
         trust_env=False,
+        verify=VERIFY,
         data={
             "grant_type": "client_credentials",
             "client_assertion_type": CLIENT_ASSERTION_TYPE,
@@ -45,12 +52,12 @@ def ready() -> None:
             svid(ISSUER)
             for url in [
                 ISSUER + "/.well-known/oauth-authorization-server",
-                "http://notes-a:8101/.well-known/oauth-protected-resource/mcp",
-                "http://notes-b:8102/.well-known/oauth-protected-resource/mcp",
-                "http://notes-rogue:8103/.well-known/oauth-protected-resource/mcp",
-                "http://authz-strict:8104/.well-known/oauth-authorization-server",
+                "https://notes-a:8101/.well-known/oauth-protected-resource/mcp",
+                "https://notes-b:8102/.well-known/oauth-protected-resource/mcp",
+                "https://notes-rogue:8103/.well-known/oauth-protected-resource/mcp",
+                "https://authz-strict:8104/.well-known/oauth-authorization-server",
             ]:
-                httpx2.get(url, timeout=3, trust_env=False).raise_for_status()
+                httpx2.get(url, timeout=3, trust_env=False, verify=VERIFY).raise_for_status()
             print(json.dumps({"event": "ready", "ok": True}))
             return
         except Exception:
@@ -59,7 +66,7 @@ def ready() -> None:
 
 
 def replay(strict: bool) -> None:
-    issuer = "http://authz-strict:8104" if strict else ISSUER
+    issuer = "https://authz-strict:8104" if strict else ISSUER
     assertion = svid(issuer)
     results = [post(assertion, issuer) for _ in range(2)]
     print(
@@ -104,7 +111,9 @@ def rotation() -> None:
     prepublished = False
     public_only = True
     while time.monotonic() < deadline:
-        keys = httpx2.get(ISSUER + "/jwks.json", timeout=5, trust_env=False).json()["keys"]
+        keys = httpx2.get(ISSUER + "/jwks.json", timeout=5, trust_env=False, verify=VERIFY).json()[
+            "keys"
+        ]
         public_only = public_only and all(not {"d", "p", "q"}.intersection(key) for key in keys)
         current = post(svid(ISSUER), ISSUER)
         current.raise_for_status()
@@ -120,7 +129,7 @@ def rotation() -> None:
                         token,
                         "notes.search",
                         {"query": "welcome"},
-                        url_policy=UrlPolicy(allow_http=True, allow_private=True),
+                        url_policy=POLICY,
                     )
                 )
                 for token in (old, new)
@@ -167,7 +176,7 @@ def lifecycle() -> None:
                     result.json()["access_token"],
                     "notes.search",
                     {"query": "welcome"},
-                    url_policy=UrlPolicy(allow_http=True, allow_private=True),
+                    url_policy=POLICY,
                 )
             )
         if time.time() > expires + 30:

@@ -16,7 +16,9 @@ from scripts.lab_runtime import DemoRuntimeError
 
 ROOT = Path(__file__).resolve().parent.parent
 DEPLOY = ROOT / "deploy"
-A, B, ISSUER = "http://notes-a:8101/mcp", "http://notes-b:8102/mcp", "http://authz:8100"
+A, B, ISSUER = "https://notes-a:8101/mcp", "https://notes-b:8102/mcp", "https://authz:8100"
+CA_FILE = "/tls-ca/ca.crt"
+PRIVATE_HOSTS = ("authz", "notes-a", "notes-b", "notes-rogue")
 RW = "notes:read notes:write"
 SEARCH = 'notes.search={"query":"welcome"}'
 WRITE = 'notes.write={"text":"injected instruction"}'
@@ -68,8 +70,9 @@ def agent(
                 service,
                 "--trusted-issuer",
                 ISSUER,
-                "--allow-http",
-                "--allow-private-network",
+                "--ca-file",
+                CA_FILE,
+                *(arg for host in PRIVATE_HOSTS for arg in ("--allow-private-host", host)),
                 "--resource",
                 resource,
                 "--scope",
@@ -79,14 +82,12 @@ def agent(
             expected=expected,
         )
     )
-    # The lab relaxes the URL policy on purpose; the client must say so exactly once.
-    relaxed = [r for r in rows if r.get("event") == "url_policy_relaxed"]
+    # Plain HTTP and blanket private-network access stay off; the client must not relax them.
     require(
-        relaxed
-        == [{"event": "url_policy_relaxed", "allow_http": True, "allow_private_network": True}],
-        "relaxed URL policy not reported",
+        not any(r.get("event") == "url_policy_relaxed" for r in rows),
+        "URL policy was relaxed",
     )
-    return [r for r in rows if r.get("event") != "url_policy_relaxed"]
+    return rows
 
 
 def require(condition: bool, description: str) -> None:
@@ -210,7 +211,7 @@ def scenarios(record: Any) -> None:  # noqa: PLR0915 - numbered demonstration
     record(4, "cross-resource replay denied")
     check_denial(agent(service="agent-impostor", expected=2), "unauthorized_client")
     record(5, "copied labels do not impersonate another ServiceAccount")
-    rogue = agent("http://notes-rogue:8103/mcp", "notes:read", expected=2)
+    rogue = agent("https://notes-rogue:8103/mcp", "notes:read", expected=2)
     require(len(rogue) == 1 and rogue[0].get("event") == "issuer_refused", "issuer refusal absent")
     record(6, "untrusted issuer refused")
     require(
@@ -264,7 +265,9 @@ def scenarios(record: Any) -> None:  # noqa: PLR0915 - numbered demonstration
         "notes:read",
         [("notes.search", "welcome")],
     )
-    policy_path.write_text(original.replace("      http://notes-b:8102/mcp: [notes:read]\n", "", 1))
+    policy_path.write_text(
+        original.replace("      https://notes-b:8102/mcp: [notes:read]\n", "", 1)
+    )
     try:
         deadline = time.monotonic() + 20
         while time.monotonic() < deadline:
