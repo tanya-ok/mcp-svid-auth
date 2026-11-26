@@ -23,6 +23,7 @@ JWT-SVID to access token bridge
 | `--static-jwks` | none | Test mode: JWT-SVID bundle as a JWKS file instead of the Workload API |
 | `--socket` | none | Workload API socket for JWT bundles, default SPIFFE_ENDPOINT_SOCKET |
 | `--audit-log` | none | Audit log file (JSON lines, appended), default stderr |
+| `--audit-replica-id` | none | Replica name written into every audit record; default HOSTNAME. Each replica needs its own --audit-log file |
 | `--max-svid-lifetime` | `300` | Reject JWT-SVIDs whose exp - iat exceeds this many seconds |
 | `--svid-replay` | `reject` | Reject: require a JWT-SVID jti and accept each (sub, jti) once; allow-reuse-within-lifetime: jti optional, a reused SVID is accepted until it expires |
 | `--replay-cache-size` | `10000` | Global live assertion cache limit; refuses when full |
@@ -70,6 +71,7 @@ Notes MCP server (reference resource server)
 | `--host` | `127.0.0.1` | Listen address |
 | `--port` | `8101` | Listen port |
 | `--audit-log` | none | Audit log file (JSON lines, appended), default stderr |
+| `--audit-replica-id` | none | Replica name written into every audit record; default HOSTNAME. Each replica needs its own --audit-log file |
 | `--dpop-required` | off | Accept only RFC 9449 sender-constrained tokens with a fresh proof on every request |
 | `--upstream-resource` | none | Upstream MCP server for notes.search_upstream, called with this server's own token |
 | `--upstream-scope` | `notes:read` | Scope requested for the upstream token |
@@ -163,7 +165,12 @@ Verify the hash chain of audit log files written with --audit-log
 | `--checkpoint` | none | Verify one complete log against a separately trusted terminal checkpoint |
 | `--write-checkpoint` | none | Create a new terminal checkpoint for one valid log; refuses to overwrite |
 | `--signing-key` | none | Ed25519 PEM private key that signs a new checkpoint; keep it away from log writers |
-| `--checkpoint-public-key` | none | Ed25519 PEM public key; the checkpoint must carry a valid signature by it |
+| `--previous-checkpoint` | none | With --write-checkpoint: last signed checkpoint, so the new one continues its chain |
+| `--checkpoint-public-key` | none | Ed25519 PEM public key; checkpoints must carry a valid signature by it |
+| `--continues-from` | none | Checkpoint of the file this log was rotated from; its last record is the parent |
+| `--min-sequence` | none | High-water mark: refuse a signed checkpoint with a lower sequence |
+| `--min-records` | none | High-water mark: refuse fewer records than this |
+| `--max-age` | none | Refuse a signed checkpoint created longer ago than this |
 
 Fixed values:
 

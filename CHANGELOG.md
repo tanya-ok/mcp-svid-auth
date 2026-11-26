@@ -43,6 +43,7 @@ published as a package.
 
 ### Security
 
+- Signed audit checkpoints carry a sequence, creation time and previous checkpoint hash; `--min-sequence`, `--min-records` and `--max-age` detect an older genuine checkpoint presented with a truncated log. Audit records gain `schema_version` and `replica_id`, each record is fsynced, one writer per file is enforced with a lock, resume checks a bounded tail, and `--continues-from` verifies a rotated file.
 - Signing, verification and checkpoint key files are opened once without following symlinks and checked on the descriptor: regular file, size cap, and for private keys owner-only permissions owned by the service user.
 - Revocation files are read once per load with O_NOFOLLOW, a regular-file check and a size cap, so parsed content and digest always match and symlinks, FIFOs or huge files fail closed. Empty or partial files are refused instead of meaning "revoke nothing". Optional detached Ed25519 signature (`--revocation-public-key`). `--revocation-poll-seconds` is limited to 0.5 to 300. The in-process token use store has a per-subject quota.
 - Raised PyJWT to 2.15 (spiffe to 0.3.2) for published advisories.

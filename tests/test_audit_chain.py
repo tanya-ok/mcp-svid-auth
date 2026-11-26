@@ -16,6 +16,7 @@ from mcp_svid_auth.audit import AuditChainError, AuditLog, canonical, record_has
 def _write(log: AuditLog, n: int) -> None:
     for i in range(n):
         log.write(spiffe_id=f"spiffe://example.org/w/{i}", tool="t", decision="allow", reason="r")
+    log.close()
 
 
 def _lines(path: Path) -> list[str]:

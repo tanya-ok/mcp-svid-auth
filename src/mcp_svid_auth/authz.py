@@ -32,7 +32,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 from starlette.routing import Route
 
-from mcp_svid_auth.audit import AuditLog
+from mcp_svid_auth.audit import AuditLog, default_replica_id
 from mcp_svid_auth.budgets import WindowBudget
 from mcp_svid_auth.dpop import DPOP_ALG, DPoPError, ProofReplayStore, VerifiedProof, verify_proof
 from mcp_svid_auth.errors import AuthError
@@ -786,6 +786,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--audit-log", type=Path, help="audit log file (JSON lines, appended), default stderr"
     )
     parser.add_argument(
+        "--audit-replica-id",
+        help="replica name written into every audit record; default HOSTNAME. "
+        "Each replica needs its own --audit-log file",
+    )
+    parser.add_argument(
         "--max-svid-lifetime",
         type=int,
         default=DEFAULT_MAX_SVID_LIFETIME,
@@ -901,7 +906,11 @@ def main(argv: list[str] | None = None) -> None:
         issuer=args.issuer.rstrip("/"),
         policy=policy,
         resolver=resolver,
-        audit=AuditLog(path=args.audit_log, component="authz"),
+        audit=AuditLog(
+            path=args.audit_log,
+            component="authz",
+            replica_id=args.audit_replica_id or default_replica_id(),
+        ),
         max_svid_lifetime=args.max_svid_lifetime,
         svid_replay=args.svid_replay,
         replay_cache=ReplayCache(args.replay_cache_size, args.replay_subject_limit, shared=state),

@@ -270,8 +270,10 @@ async def test_tracking_requires_a_jti(tmp_path: Path) -> None:
     revocations = _revocations(tmp_path / "r.json", Clock())
     async with _world(tmp_path, revocation=revocations) as (http, authz, audit):
         assert (await _search(http, _token(authz, jti=None))).startswith("HTTP 401")
-    async with _world(tmp_path, token_uses=TokenUseCounter(5)) as (http, authz, _):
+    second = tmp_path / "second"
+    async with _world(second, token_uses=TokenUseCounter(5)) as (http, authz, other):
         assert (await _search(http, _token(authz, jti=None))).startswith("HTTP 401")
+    assert "invalid_token: MissingRequiredClaimError" in _reasons(other)
     assert "invalid_token: MissingRequiredClaimError" in _reasons(audit)
 
 

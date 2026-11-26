@@ -67,7 +67,7 @@ from mcp_svid_auth.agent_client import (
     issuer_arg,
     url_policy_from_args,
 )
-from mcp_svid_auth.audit import AuditLog
+from mcp_svid_auth.audit import AuditLog, default_replica_id
 from mcp_svid_auth.budgets import WindowBudget
 from mcp_svid_auth.dpop import DPOP_ALG, DPoPError, ProofReplayStore, verify_proof
 from mcp_svid_auth.revocation import (
@@ -962,6 +962,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--audit-log", type=Path, help="audit log file (JSON lines, appended), default stderr"
     )
     parser.add_argument(
+        "--audit-replica-id",
+        help="replica name written into every audit record; default HOSTNAME. "
+        "Each replica needs its own --audit-log file",
+    )
+    parser.add_argument(
         "--dpop-required",
         action="store_true",
         help="accept only RFC 9449 sender-constrained tokens with a fresh proof on every request",
@@ -1049,7 +1054,11 @@ def main(argv: list[str] | None = None) -> None:
         jwks=JwksFetcher(
             args.jwks_uri or f"{issuer}/jwks.json", verify=client_context(args.ca_file)
         ),
-        audit=AuditLog(path=args.audit_log, component=f"mcp_server:{args.name}"),
+        audit=AuditLog(
+            path=args.audit_log,
+            component=f"mcp_server:{args.name}",
+            replica_id=args.audit_replica_id or default_replica_id(),
+        ),
         upstream=upstream,
         dpop_required=args.dpop_required,
         state=state,
