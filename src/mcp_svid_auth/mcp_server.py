@@ -78,6 +78,12 @@ from mcp_svid_auth.revocation import (
     TokenUseError,
 )
 from mcp_svid_auth.spiffe_keys import SvidSource, WorkloadApiSvidSource
+from mcp_svid_auth.state import (
+    SharedState,
+    StateUnavailableError,
+    add_state_flags,
+    state_from_args,
+)
 from mcp_svid_auth.tls import add_tls_server_flags, client_context, tls_server_kwargs
 
 JWKS_CACHE_SECONDS = 60
@@ -501,8 +507,8 @@ class ToolScopeGuard:
             self.audit.write(
                 spiffe_id=spiffe_id, tool=",".join(calls), decision="deny", reason=reason
             )
-            if reason == "token_use_store_full":
-                await _error(send, 503, "temporarily_unavailable", "token use store full")
+            if reason in ("token_use_store_full", "token_use_store_unavailable"):
+                await _error(send, 503, "temporarily_unavailable", "token use store unavailable")
             else:
                 await _error(send, 401, "invalid_token", "access token call limit reached")
             return False
@@ -827,6 +833,7 @@ def create_app(  # noqa: PLR0913
     dpop_required: bool = False,
     revocation: RevocationList | None = None,
     token_uses: TokenUseCounter | None = None,
+    state: SharedState | None = None,
 ) -> Starlette:
     resource = resource.rstrip("/")
     mcp, tool_scopes = build_mcp(name, store or NotesStore(), upstream)
@@ -861,7 +868,7 @@ def create_app(  # noqa: PLR0913
     )
     endpoint = AuditedRequireAuth(guarded, metadata_url, audit, dpop=dpop_required)
     backend: AuthenticationBackend = (
-        DPoPAuthBackend(verifier, resource, audit)
+        DPoPAuthBackend(verifier, resource, audit, ProofReplayStore(shared=state))
         if dpop_required
         else BearerAuthBackend(verifier, resource_server_url=resource_url)
     )
@@ -901,6 +908,11 @@ def create_app(  # noqa: PLR0913
             return JSONResponse({"status": "unavailable"}, status_code=503)
         if revocation is not None and not revocation.available:
             return JSONResponse({"status": "revocation_unavailable"}, status_code=503)
+        if state is not None:
+            try:
+                state.ping()
+            except StateUnavailableError:
+                return JSONResponse({"status": "state_store_unavailable"}, status_code=503)
         return JSONResponse({"status": "ok"})
 
     prm_path = urlsplit(metadata_url).path
@@ -990,6 +1002,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     add_url_flags(parser)
     add_tls_server_flags(parser)
+    add_state_flags(parser)
     return parser
 
 
@@ -1017,6 +1030,7 @@ def main(argv: list[str] | None = None) -> None:
             svid_source=WorkloadApiSvidSource(socket_path=args.socket),
             url_policy=url_policy_from_args(args),
         )
+    state = state_from_args(args, parser)
     app = create_app(
         name=args.name,
         resource=args.resource,
@@ -1027,13 +1041,14 @@ def main(argv: list[str] | None = None) -> None:
         audit=AuditLog(path=args.audit_log, component=f"mcp_server:{args.name}"),
         upstream=upstream,
         dpop_required=args.dpop_required,
+        state=state,
         revocation=(
             RevocationList.load(args.revocation_file, args.revocation_poll_seconds)
             if args.revocation_file
             else None
         ),
         token_uses=(
-            TokenUseCounter(args.max_calls_per_token, args.token_use_cache_size)
+            TokenUseCounter(args.max_calls_per_token, args.token_use_cache_size, shared=state)
             if args.max_calls_per_token
             else None
         ),

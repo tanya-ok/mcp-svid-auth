@@ -22,6 +22,8 @@ import httpx2
 import jwt
 from cryptography.hazmat.primitives.asymmetric import ec
 
+from mcp_svid_auth.state import SharedState, StateUnavailableError
+
 DPOP_ALG = "ES256"
 DPOP_TYP = "dpop+jwt"
 MAX_PROOF_BYTES = 4096
@@ -160,6 +162,7 @@ class ProofReplayStore:
     """
 
     max_entries: int = DEFAULT_PROOF_REPLAY_SIZE
+    shared: SharedState | None = None
     _expiry: dict[tuple[str, str], float] = field(default_factory=dict)
     _heap: list[tuple[float, tuple[str, str]]] = field(default_factory=list)
     _lock: threading.Lock = field(default_factory=threading.Lock)
@@ -175,6 +178,14 @@ class ProofReplayStore:
         key = (proof.jkt, proof.jti)
         # Kept past the later of the two windows, so an accepted proof cannot pass twice.
         expires_at = max(now, proof.iat) + PROOF_MAX_AGE_SECONDS + PROOF_MAX_FUTURE_SECONDS
+        if self.shared is not None:
+            try:
+                fresh = self.shared.add_once("dpop", f"{proof.jkt}\n{proof.jti}", expires_at)
+            except StateUnavailableError:
+                raise DPoPError("proof_replay_store_unavailable") from None
+            if not fresh:
+                raise DPoPError("proof_replayed")
+            return
         with self._lock:
             while self._heap and self._heap[0][0] <= now:
                 _, old = heapq.heappop(self._heap)

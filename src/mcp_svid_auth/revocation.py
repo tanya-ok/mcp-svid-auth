@@ -17,6 +17,8 @@ from pathlib import Path
 
 import yaml
 
+from mcp_svid_auth.state import SharedState, StateUnavailableError
+
 MAX_REVOCATION_FILE_BYTES = 1024 * 1024
 MAX_REVOCATION_ENTRIES = 100_000
 DEFAULT_REVOCATION_POLL_SECONDS = 5.0
@@ -133,6 +135,7 @@ class TokenUseCounter:
 
     max_calls: int
     max_entries: int = DEFAULT_TOKEN_USE_CACHE_SIZE
+    shared: SharedState | None = None
     _uses: dict[str, int] = field(default_factory=dict)
     _heap: list[tuple[float, str]] = field(default_factory=list)
     _lock: threading.Lock = field(default_factory=threading.Lock)
@@ -145,6 +148,14 @@ class TokenUseCounter:
         return len(self._uses)
 
     def consume(self, jti: str, expires_at: float, calls: int, now: float) -> None:
+        if self.shared is not None:
+            try:
+                within = self.shared.add_up_to("calls", jti, calls, self.max_calls, expires_at)
+            except StateUnavailableError:
+                raise TokenUseError("token_use_store_unavailable") from None
+            if not within:
+                raise TokenUseError("token_call_limit_reached")
+            return
         with self._lock:
             while self._heap and self._heap[0][0] <= now:
                 _, old = heapq.heappop(self._heap)

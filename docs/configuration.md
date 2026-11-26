@@ -37,6 +37,12 @@ JWT-SVID to access token bridge
 | `--tls-cert` | none | PEM server certificate chain; enables HTTPS with --tls-key |
 | `--tls-key` | none | PEM private key for --tls-cert |
 | `--tls-client-ca` | none | PEM CA bundle; when set, every client must present a certificate it signed (mTLS) |
+| `--state-store-url` | none | Redis:// or rediss:// URL of a Valkey or Redis store shared by replicas; default in-process state |
+| `--state-store-password-file` | none | File holding the store password |
+| `--state-store-ca-file` | none | PEM CA bundle for rediss:// |
+| `--state-store-cert` | none | PEM client certificate for store mTLS |
+| `--state-store-key` | none | PEM key for --state-store-cert |
+| `--state-store-prefix` | `mcp-svid-auth` | Key prefix; replicas of one deployment must use the same value |
 
 Fixed values:
 
@@ -79,6 +85,12 @@ Notes MCP server (reference resource server)
 | `--tls-cert` | none | PEM server certificate chain; enables HTTPS with --tls-key |
 | `--tls-key` | none | PEM private key for --tls-cert |
 | `--tls-client-ca` | none | PEM CA bundle; when set, every client must present a certificate it signed (mTLS) |
+| `--state-store-url` | none | Redis:// or rediss:// URL of a Valkey or Redis store shared by replicas; default in-process state |
+| `--state-store-password-file` | none | File holding the store password |
+| `--state-store-ca-file` | none | PEM CA bundle for rediss:// |
+| `--state-store-cert` | none | PEM client certificate for store mTLS |
+| `--state-store-key` | none | PEM key for --state-store-cert |
+| `--state-store-prefix` | `mcp-svid-auth` | Key prefix; replicas of one deployment must use the same value |
 
 Fixed values:
 

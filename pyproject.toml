@@ -44,12 +44,18 @@ mcp-svid-agent = "mcp_svid_auth.agent_client:main"
 mcp-svid-stdio = "mcp_svid_auth.stdio_wrapper:main"
 mcp-svid-audit-verify = "mcp_svid_auth.audit:main"
 
+[project.optional-dependencies]
+valkey = [
+    "redis>=6,<8",
+]
+
 [dependency-groups]
 dev = [
     "pytest>=8.3,<10",
     "ruff>=0.12,<1",
     "mypy>=1.16,<3",
     "types-pyyaml>=6.0.12.20260906,<7",
+    "redis>=6,<8",
 ]
 docs = [
     "zensical>=0.0.65,<0.2",

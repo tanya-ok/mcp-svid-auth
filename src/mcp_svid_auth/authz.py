@@ -55,6 +55,12 @@ from mcp_svid_auth.spiffe_keys import (
     WorkloadApiResolver,
     spiffe_trust_domain,
 )
+from mcp_svid_auth.state import (
+    SharedState,
+    StateUnavailableError,
+    add_state_flags,
+    state_from_args,
+)
 from mcp_svid_auth.tls import add_tls_server_flags, tls_server_kwargs
 
 CLIENT_ASSERTION_TYPE = "urn:ietf:params:oauth:client-assertion-type:jwt-spiffe"
@@ -93,6 +99,8 @@ class ReplayCache:
 
     max_entries: int = DEFAULT_REPLAY_CACHE_SIZE
     per_subject_limit: int = DEFAULT_REPLAY_SUBJECT_LIMIT
+    # With a shared store, size limits are the store's memory limit (noeviction) instead.
+    shared: SharedState | None = None
     _subjects: dict[str, int] = field(default_factory=dict)
     _expiry: dict[tuple[str, str], float] = field(default_factory=dict)
     _heap: list[tuple[float, tuple[str, str]]] = field(default_factory=list)
@@ -121,6 +129,21 @@ class ReplayCache:
     def add(self, sub: str, jti: str, expires_at: float, now: float) -> None:
         """Record a first use. Raises AuthError on replay or when the cache is full."""
         key = (sub, jti)
+        if self.shared is not None:
+            try:
+                fresh = self.shared.add_once("svid", f"{sub}\n{jti}", expires_at)
+            except StateUnavailableError as exc:
+                raise AuthError(
+                    "temporarily_unavailable", "replay store unavailable", 503, str(exc)
+                ) from None
+            if not fresh:
+                raise AuthError(
+                    "invalid_client",
+                    "client assertion replayed",
+                    401,
+                    "jti_sha256=" + hashlib.sha256(jti.encode()).hexdigest()[:16],
+                )
+            return
         with self._lock:
             self._evict(now)
             if key in self._expiry:
@@ -178,6 +201,7 @@ class AuthzServer:
     revocation: RevocationList | None = None
     # Previous public keys published for overlap after an operator-managed rotation.
     published_keys: list[dict[str, Any]] = field(default_factory=list)
+    state: SharedState | None = None
     _policy_digest: str | None = None
     _reload_lock: threading.Lock = field(default_factory=threading.Lock)
 
@@ -599,6 +623,11 @@ class AuthzServer:
                 return JSONResponse({"status": "policy_unavailable"}, status_code=503)
             if self.revocation is not None and not self.revocation.available:
                 return JSONResponse({"status": "revocation_unavailable"}, status_code=503)
+            if self.state is not None:
+                try:
+                    self.state.ping()
+                except StateUnavailableError:
+                    return JSONResponse({"status": "state_store_unavailable"}, status_code=503)
             return JSONResponse({"status": "ok"})
 
         return Starlette(
@@ -824,6 +853,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="maximum delay before a changed revocation file applies",
     )
     add_tls_server_flags(parser)
+    add_state_flags(parser)
     return parser
 
 
@@ -852,6 +882,7 @@ def main(argv: list[str] | None = None) -> None:
     args = parser.parse_args(argv)
     tls = tls_server_kwargs(args, parser, public_url=args.issuer)
     keys = _key_options(args, parser)
+    state = state_from_args(args, parser)
 
     policy = Policy.load(args.policy)
     resolver: KeyResolver
@@ -866,9 +897,15 @@ def main(argv: list[str] | None = None) -> None:
         audit=AuditLog(path=args.audit_log, component="authz"),
         max_svid_lifetime=args.max_svid_lifetime,
         svid_replay=args.svid_replay,
-        replay_cache=ReplayCache(args.replay_cache_size, args.replay_subject_limit),
-        request_budget=WindowBudget(args.token_requests_per_second, max_keys=1),
-        subject_budget=WindowBudget(args.subject_requests_per_second),
+        replay_cache=ReplayCache(args.replay_cache_size, args.replay_subject_limit, shared=state),
+        request_budget=WindowBudget(
+            args.token_requests_per_second, max_keys=1, shared=state, name="authz-requests"
+        ),
+        subject_budget=WindowBudget(
+            args.subject_requests_per_second, shared=state, name="authz-subject"
+        ),
+        proof_replay=ProofReplayStore(shared=state),
+        state=state,
         signing_rotation_seconds=args.signing_rotation_seconds,
         **keys,
         token_exchange=args.token_exchange,
