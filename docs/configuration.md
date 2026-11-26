@@ -72,6 +72,7 @@ Notes MCP server (POC)
 | `--token-use-cache-size` | `100000` | Live token jti entries kept for --max-calls-per-token; refuses new tokens when full |
 | `--allow-http` | off | Dev only: accept plain http URLs for discovery, token requests and tool calls |
 | `--allow-private-network` | off | Dev only: accept hosts that resolve to private, loopback or link-local addresses |
+| `--allow-private-host` | `[]` | Exact host allowed to resolve to a private address; repeatable, https still required |
 | `--ca-file` | none | PEM CA bundle that replaces the system trust store for outbound HTTPS |
 | `--tls-cert` | none | PEM server certificate chain; enables HTTPS with --tls-key |
 | `--tls-key` | none | PEM private key for --tls-cert |
@@ -103,6 +104,7 @@ Agent that authenticates with its JWT-SVID
 | `--trusted-issuer` | required | Authorization server issuer the agent may mint SVIDs for; repeatable, exact match |
 | `--allow-http` | off | Dev only: accept plain http URLs for discovery, token requests and tool calls |
 | `--allow-private-network` | off | Dev only: accept hosts that resolve to private, loopback or link-local addresses |
+| `--allow-private-host` | `[]` | Exact host allowed to resolve to a private address; repeatable, https still required |
 | `--ca-file` | none | PEM CA bundle that replaces the system trust store for outbound HTTPS |
 | `--spiffe-id` | none | Sent as client_id |
 | `--dpop` | off | Use RFC 9449 sender-constrained tokens with a key held in process memory |
@@ -121,6 +123,7 @@ Run a stdio MCP server with a short-lived token from the Workload API
 | `--trusted-issuer` | required | Authorization server issuer the wrapper may mint SVIDs for; repeatable, exact match |
 | `--allow-http` | off | Dev only: accept plain http URLs for discovery, token requests and tool calls |
 | `--allow-private-network` | off | Dev only: accept hosts that resolve to private, loopback or link-local addresses |
+| `--allow-private-host` | `[]` | Exact host allowed to resolve to a private address; repeatable, https still required |
 | `--ca-file` | none | PEM CA bundle that replaces the system trust store for outbound HTTPS |
 | `--socket` | none | Workload API socket, default SPIFFE_ENDPOINT_SOCKET |
 | `--refresh-margin` | `60` | Seconds before expiry to refresh |

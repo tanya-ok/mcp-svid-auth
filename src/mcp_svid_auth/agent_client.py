@@ -107,6 +107,8 @@ class UrlPolicy:
 
     allow_http: bool = False
     allow_private: bool = False
+    # Exact host names the operator allows to resolve to private addresses (in-cluster names).
+    private_hosts: frozenset[str] = frozenset()
     resolve: Resolver = field(default=resolve_host, compare=False)
     # Certificate verification for the default transport: system trust or a private CA context.
     tls_verify: ssl.SSLContext | bool = field(default=True, compare=False)
@@ -139,7 +141,11 @@ class UrlPolicy:
         if not addresses:
             raise UnsafeUrlError(url, "host does not resolve")
         try:
-            permitted = self.allow_private or all(is_public_address(a) for a in addresses)
+            permitted = (
+                self.allow_private
+                or host.lower().rstrip(".") in self.private_hosts
+                or all(is_public_address(a) for a in addresses)
+            )
         except ValueError:
             permitted = False
         if not permitted:
@@ -445,6 +451,13 @@ def add_url_flags(parser: argparse.ArgumentParser) -> None:
         action="store_true",
         help="dev only: accept hosts that resolve to private, loopback or link-local addresses",
     )
+    parser.add_argument(
+        "--allow-private-host",
+        action="append",
+        default=[],
+        metavar="HOST",
+        help="exact host allowed to resolve to a private address; repeatable, https still required",
+    )
     add_ca_flag(parser)
 
 
@@ -453,6 +466,7 @@ def url_policy_from_args(args: argparse.Namespace) -> UrlPolicy:
     policy = UrlPolicy(
         allow_http=args.allow_http,
         allow_private=args.allow_private_network,
+        private_hosts=frozenset(h.lower().rstrip(".") for h in args.allow_private_host),
         tls_verify=client_context(args.ca_file),
     )
     if policy.allow_http or policy.allow_private:
