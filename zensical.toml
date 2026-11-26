@@ -1,6 +1,6 @@
 [project]
 site_name = "mcp-svid-auth"
-site_description = "Proof of concept: SPIFFE JWT-SVIDs as OAuth client credentials for MCP servers"
+site_description = "SPIFFE JWT-SVIDs as OAuth client credentials for MCP servers"
 site_author = "Tanya Babitskaya"
 site_url = "https://tanya-ok.github.io/mcp-svid-auth/"
 copyright = "Copyright &copy; 2026 Tanya Babitskaya. Apache-2.0."
@@ -18,6 +18,7 @@ nav = [
   { "Demo" = "demo.md" },
   { "Security and reference" = [
   { "Security model" = "security.md" },
+  { "Production readiness" = "production-readiness.md" },
   { "Threat model" = "threat-model.md" },
   { "Compatibility" = "compatibility.md" },
   { "Configuration" = "configuration.md" },

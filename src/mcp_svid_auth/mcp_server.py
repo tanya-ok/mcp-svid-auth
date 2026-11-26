@@ -923,7 +923,9 @@ def create_app(  # noqa: PLR0913
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="mcp-svid-notes", description="Notes MCP server (POC)")
+    parser = argparse.ArgumentParser(
+        prog="mcp-svid-notes", description="Notes MCP server (reference resource server)"
+    )
     parser.add_argument(
         "--name",
         default="notes",

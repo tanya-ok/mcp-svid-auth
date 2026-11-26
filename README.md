@@ -1,6 +1,6 @@
 # mcp-svid-auth
 
-A checked proof of concept: an AI agent exchanges its SPIFFE workload identity for a short-lived, audience-bound MCP access token. The demo shows both enforced security boundaries and the failures identity alone cannot prevent.
+An OAuth token endpoint, MCP resource-server verifier and agent client that let an AI agent exchange its SPIFFE workload identity for a short-lived, audience-bound MCP access token, with no static API key. It supports HTTPS and mTLS listeners, DPoP, token revocation, persistent signing keys and signed audit checkpoints. Not yet production-ready: the [production readiness](docs/production-readiness.md) table lists what is closed in code and what still needs operator infrastructure or decisions.
 
 Documentation: https://tanya-ok.github.io/mcp-svid-auth/
 
@@ -19,7 +19,7 @@ MCP client configs often hold long-lived static keys:
 | Not bound to a server | One key often opens several servers |
 | No per-caller identity | Audit logs cannot say which agent acted |
 
-## What this POC shows
+## What it does
 
 | Claim | Where |
 |---|---|
@@ -27,10 +27,14 @@ MCP client configs often hold long-lived static keys:
 | Tokens are bound to one MCP server via the RFC 8707 `resource` parameter | `authz.py`, `policy.py` |
 | A token issued for server A is rejected by server B | `mcp_server.py`, `test_token_for_a_is_rejected_by_b` |
 | Scopes are enforced per tool, with a 403 `insufficient_scope` challenge. Tools without a declared scope are denied. | `ToolScopeGuard`, `build_mcp` |
-| Decisions are hash-chained; a separately trusted terminal checkpoint detects suffix deletion and chain replacement. Without a checkpoint, `mcp-svid-audit-verify` detects edits but not deletion of lines from the end | `audit.py` |
+| Decisions are hash-chained; a terminal checkpoint detects suffix deletion and chain replacement. An Ed25519 signed checkpoint also detects a checkpoint rebuilt by the log writer. Without a checkpoint, `mcp-svid-audit-verify` detects edits but not deletion of lines from the end | `audit.py`, [audit integrity](docs/audit.md) |
 | The MCP server never forwards the incoming token. With an upstream it uses its own token | `Upstream` in `mcp_server.py`, `test_no_passthrough.py` |
 | A stdio MCP server can start with a refreshed short-lived token instead of a static key | `stdio_wrapper.py` |
-| Opt-in DPoP binds a token to the agent's key, so a stolen token alone is refused. HTTPS integration is not verified yet | `dpop.py`, `tests/test_dpop.py`, [security notes](docs/security.md#sender-constrained-tokens-dpop) |
+| Opt-in DPoP binds a token to the agent's key, so a stolen token alone is refused. Verified over real HTTPS sockets in offline tests | `dpop.py`, `tests/test_https_end_to_end.py`, [security notes](docs/security.md#sender-constrained-tokens-dpop) |
+| Both servers serve HTTPS, optionally with client certificate verification; outbound clients can trust a private CA without disabling verification | `tls.py`, `tests/test_tls_listeners.py` |
+| Revoked token `jti` values and blocked SPIFFE IDs are refused within a stated poll bound; unreadable revocation state fails closed. Optional per-token tool call limit | `revocation.py`, `tests/test_revocation.py` |
+| A persistent signing key keeps tokens valid across restarts and replicas, with published previous keys for rotation overlap | `signing_keys.py`, `tests/test_signing_key_file.py` |
+| Liveness and readiness probes report a failed policy load, unavailable JWKS or unreadable revocation state | `/healthz`, `/readyz` |
 
 Targets the [MCP authorization spec, revision 2026-07-28](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization) (checked 2026-10-04): Protected Resource Metadata (RFC 9728), resource indicators (RFC 8707), audience validation, no token passthrough.
 
@@ -161,13 +165,13 @@ Denials record unverified subjects as `unverified:sha256:<digest prefix>`. A che
 
 | Threat | Mitigation here | Gap |
 |---|---|---|
-| Static key leak | No static keys. Access tokens live 5 min; SVID maximum is 5 min, with 60s SVIDs in the demo. | A stolen access token works until expiry. |
+| Static key leak | No static keys. Access tokens live 5 min; SVID maximum is 5 min, with 60s SVIDs in the demo. Opt-in DPoP, revocation file and per-token call limit. | Without DPoP, a stolen Bearer token works until expiry or until its `jti` is revoked. |
 | Token replay to another server | `aud` bound to one resource. Each server checks `aud` equals its own URI. | None within one issuer. |
 | JWT-SVID replay to authz | SVID `aud` must be the issuer only. Maximum SVID lifetime 5 min; demo TTL 60s. Default `--svid-replay reject`: `jti` required, each `(sub, jti)` accepted once. | The container demo runs `allow-reuse-within-lifetime` because the SPIRE 1.15.3 agent re-serves cached SVIDs; there a stolen SVID mints tokens until it expires. See [docs/security.md](docs/security.md#jwt-svid-replay-tracking). |
 | SVID harvesting by a malicious resource | The agent mints SVIDs only for issuers on its `--trusted-issuer` allowlist. An issuer named in Protected Resource Metadata that is not on the list is refused, and logged as `issuer_refused`, before any request to it and before any SVID fetch. Exact match after scheme, host and default port normalization; no prefix match. | The allowlist is per process, not per resource. |
-| Discovery SSRF | Every URL the agent fetches or sends a credential to (resource, issuer, `token_endpoint`, tool call) must be `https` and resolve only to public addresses. Refused URLs are logged as `url_refused` and get no request. | `--allow-http` and `--allow-private-network` turn the checks off for dev; the container demo needs both. The default transport connects to a checked numeric address, preserves Host and TLS hostname verification, separates connection pools by original origin and ignores proxy environment variables. Custom HTTP factories must provide equivalent protection. |
+| Discovery SSRF | Every URL the agent fetches or sends a credential to (resource, issuer, `token_endpoint`, tool call) must be `https` and resolve only to public addresses. Refused URLs are logged as `url_refused` and get no request. | `--allow-http` and `--allow-private-network` turn the checks off for dev; the container demo needs both. `--allow-private-host` allows exact in-cluster names without the blanket flag. The default transport connects to a checked numeric address, preserves Host and TLS hostname verification, separates connection pools by original origin and ignores proxy environment variables. Custom HTTP factories must provide equivalent protection. |
 | Workload impersonation | SPIRE Kubernetes attestor binds identity to namespace and ServiceAccount. Copied labels do not suffice. | Cluster operators and anyone allowed to use that ServiceAccount can assume its identity. |
-| Over-broad access | Allowlist per SPIFFE ID, resource and scope. Per-tool scope check. Policy reloaded on SIGHUP or file change. | Policy is a local file. No versioning or review flow. Issued tokens outlive a revoked grant by up to 300s. |
+| Over-broad access | Allowlist per SPIFFE ID, resource and scope. Per-tool scope check. Policy reloaded on SIGHUP or file change. | Policy is a local file. No versioning or review flow. Issued tokens outlive a removed grant by up to 300s unless their `jti` or SPIFFE ID is added to the revocation file. |
 | Confused deputy | Server never forwards the incoming token. An upstream call uses the server's own SVID-based token (`notes.search_upstream`), tested in `test_no_passthrough.py`. | No delegation chain: the upstream sees the relay, not the original caller. |
 | Algorithm confusion | SVIDs: asymmetric algorithms only, `alg=none` rejected. Access tokens: ES256 only, `typ` `at+jwt`. Key selected by `kid` from a trusted key set. | |
 | Stale token in a stdio child | Token passed by 0600 file, refreshed. Wrapper deletes it and stops the child on expiry. With `--export-token-env` the child is stopped when the exported token expires. | `--export-token-env` values are visible in the process environment to the same UID. |
@@ -175,28 +179,29 @@ Denials record unverified subjects as `unverified:sha256:<digest prefix>`. A che
 
 ## Non-goals
 
-- Not production software. No HA or distributed rate limits; planned in-process key rotation and local cost budgets only. Plain HTTP inside the demo network.
+- Not yet production-ready. Replay caches and rate budgets are per process, so there is no HA or distributed rate limiting. No KMS or HSM signer. The lab network still runs plain HTTP although both servers support HTTPS. See [production readiness](docs/production-readiness.md).
 - Not a replacement for an MCP gateway such as agentgateway. It shows the token flow a gateway could implement.
 - No human user delegation. Opt-in RFC 8693 token exchange (`--token-exchange`) delegates between workloads with an `act` claim, no chains; not yet exercised in the Kubernetes demo.
 - The authorization server accepts JWT-SVID client assertions only. The shared FHIR transport also uses X.509-SVID mTLS. No WIT-SVID client authentication.
 - The default Kubernetes lab is single-node and synthetic. Podman compatibility commands were retired on 2026-10-13. See [shared lab limits](docs/kubernetes-lab.md#trust-boundary-and-remaining-work).
-- No `jti` replay tracking for access tokens.
+- Access token `jti` tracking (`--max-calls-per-token`) and revocation are per process and file based, not shared across replicas.
 - The container demo accepts JWT-SVID reuse within the SVID lifetime (`--svid-replay=allow-reuse-within-lifetime`). The SPIRE 1.15.3 agent returns the same cached SVID, with the same `jti`, on repeated fetches before renewal.
 
 ## Status
 
-The dated [publication validation](docs/publication.md) records the checks, artifacts and remaining proof-of-concept limits. Validation runs locally; no release, package upload or deployment is part of it.
+The dated [publication validation](docs/publication.md) records the earlier checks and artifacts. The [production readiness](docs/production-readiness.md) table is the current list of closed and remaining gaps. Validation runs locally; no release, package upload or deployment is part of it.
 
 | Item | State |
 |---|---|
-| Offline checks | Pass on 2026-10-13: 537 tests on Python 3.12 and 3.13 after retiring the Podman backend and adding runtime migration checks, lint, formatting, strict types, generated docs and strict documentation build; source/history credential checks have no unresolved findings; see the exact packet-hash false positive in the portfolio readiness record |
-| Kubernetes/containerd integration | Pass on 2026-10-13: fresh rebuild, all 18 scenarios and final scoped teardown. Planned signing rotation preserved old/new tokens; three real SPIRE fetches returned one cached assertion with jti. CISO namespace UID and shared VM preserved. See [rotation evidence](docs/auth-cost-rotation.md) |
+| Offline checks | Pass on 2026-11-26: 724 tests on Python 3.12 and 3.13, including real TLS, mTLS and HTTPS DPoP sockets, revocation, signed checkpoints and persistent signing keys; lint, formatting, strict types, generated docs, strict documentation build and package validation. Earlier: pass on 2026-10-13: 537 tests on Python 3.12 and 3.13 after retiring the Podman backend and adding runtime migration checks, lint, formatting, strict types, generated docs and strict documentation build; source/history credential checks have no unresolved findings; see the exact packet-hash false positive in the portfolio readiness record |
+| Kubernetes/containerd integration | Not rerun after the 2026-11-26 changes; `deploy/` is unchanged. Last pass on 2026-10-13: fresh rebuild, all 18 scenarios and final scoped teardown. Planned signing rotation preserved old/new tokens; three real SPIRE fetches returned one cached assertion with jti. CISO namespace UID and shared VM preserved. See [rotation evidence](docs/auth-cost-rotation.md) |
 | Headlamp interface | Namespace-scoped browsing fixed on 2026-10-20: fresh-browser Pods, Deployments and Services passed in an isolated VM, with live 403/405 negative checks and all 18 security scenarios. RBAC unchanged. A combined physical-passkey/manual resource check after this fix is still pending. See [interface and boundaries](docs/headlamp-ui.md) |
 | Optional ZITADEL identity | Pass: 11 real synthetic WebAuthn/OIDC checks, 4 closed Google setup checks and full scoped lifecycle on 2026-10-06. The recovery cycle sampled at most 1858.1 MiB guest use including native startup. Real Google login and physical enrollment remain unverified. See [identity boundaries](docs/passwordless-identity.md) |
 | Historical Podman validation | Retired on 2026-10-13; the 2026-10-05 result remains historical evidence only |
 | Default strict replay mode | Live comparison: first exchange succeeds, second is denied. Normal demo explicitly accepts cached SVID reuse |
 | Independent TypeScript MCP SDK | SDK 1.32.2 with explicit JWT-SVID adapter: discovery, exchange, initialize, scoped listing and read verified; added write denial checked separately |
-| Audit completeness | Terminal checkpoint supported; its protection requires separate trusted storage |
+| Audit completeness | Signed terminal checkpoints supported and tested offline; checkpoint key custody and durable log storage are operator responsibilities |
+| Production readiness | Not yet: per-process replay state, admission policy, lab TLS, KMS signer and retained audit storage remain. See [production readiness](docs/production-readiness.md) |
 | Publication packages | Local wheel and source archive, license and contents verified; never uploaded |
 
 ## License

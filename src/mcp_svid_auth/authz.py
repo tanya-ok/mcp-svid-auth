@@ -712,7 +712,7 @@ def parse_scope(raw: str | None) -> set[str]:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="mcp-svid-authz", description="JWT-SVID to access token bridge (POC)"
+        prog="mcp-svid-authz", description="JWT-SVID to access token bridge"
     )
     parser.add_argument(
         "--issuer",

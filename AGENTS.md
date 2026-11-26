@@ -10,7 +10,7 @@ Instructions for AI coding agents (and humans) working in this repository. Vendo
 
 ## What this project is
 
-A proof of concept: SPIFFE JWT-SVIDs used as OAuth client credentials for MCP servers, so agents never hold static API keys. Not production software. Read `README.md` and `docs/security.md` before changing behaviour.
+SPIFFE JWT-SVIDs used as OAuth client credentials for MCP servers, so agents never hold static API keys. Not yet production-ready: `docs/production-readiness.md` lists closed and remaining gaps. Never describe it as production-ready while that table has open items. Read `README.md` and `docs/security.md` before changing behaviour.
 
 | Module | Role |
 |---|---|
@@ -19,6 +19,9 @@ A proof of concept: SPIFFE JWT-SVIDs used as OAuth client credentials for MCP se
 | `src/mcp_svid_auth/agent_client.py` | Agent side. Fetches its SVID, gets a token, calls tools. `--steal-token` demo |
 | `src/mcp_svid_auth/stdio_wrapper.py` | Local stdio launcher that hands the child a short-lived token file |
 | `src/mcp_svid_auth/spiffe_keys.py` | Workload API and static-JWKS key sources |
+| `src/mcp_svid_auth/tls.py` | HTTPS and mTLS listener flags, private CA for outbound clients |
+| `src/mcp_svid_auth/revocation.py` | Revocation file and per-token call limits |
+| `src/mcp_svid_auth/signing_keys.py` | Persistent signing key and published previous keys |
 | `deploy/` | Shared Kubernetes/containerd lab in CNCF Lima, SPIRE registration |
 
 ## Commands

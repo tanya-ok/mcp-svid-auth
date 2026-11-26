@@ -32,6 +32,8 @@ published as a package.
 
 ### Changed
 
+- `docs/production-readiness.md` lists closed and remaining gaps. README, security notes, package description and the Beta classifier describe the project by what it does; it is stated as not yet production-ready.
+- The source archive is built from an explicit path allowlist.
 - Discovery URLs require https and public addresses unless development flags allow otherwise.
 - The stdio wrapper stops the child when an exported environment token expires.
 - The Podman runtime path was retired; containerd is the only lab runtime.

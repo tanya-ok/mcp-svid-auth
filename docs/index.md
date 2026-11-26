@@ -51,4 +51,4 @@ flowchart TB
 Human-to-agent delegation is not implemented; real Google sign-in and physical passkey enrollment remain operator gates.
 
 !!! note "Scope"
-    Prototype. Identity proves the workload, not the human intent.
+    Not yet production-ready; see [production readiness](production-readiness.md). Identity proves the workload, not the human intent.

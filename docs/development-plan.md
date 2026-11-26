@@ -23,6 +23,8 @@ The older 2 CPU / 2 GiB Podman demo and its label-impersonation weakness were re
 
 ## Deliberate remaining limits
 
+Current state, 2026-11-26: TLS and mTLS listeners, revocation, persistent signing keys and signed checkpoints are implemented; the [production readiness](production-readiness.md) table supersedes this section for open gaps.
+
 The Kubernetes lab denies copied labels, but trusts the cluster operator and anyone permitted to use an authorized ServiceAccount. SPIRE 1.15.3 re-serves cached SVIDs, so the normal demo explicitly permits reuse; the default server mode still rejects repeated assertions. Existing access tokens survive grant removal until expiry. Planned signing key rotation keeps an overlap period, but a restart still loses old keys. Scope checks do not determine human intent or clinical authority.
 
 The authorization server's Workload API bundle lookup is a local-demo alternative discouraged for general interoperability by draft -02. The TypeScript test proves the explicit adapter, not generic SDK support for `spiffe_jwt`. A colocated checkpoint supplies no independent protection. These limits are part of the demonstration, not hidden future completion requirements.

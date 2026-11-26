@@ -9,7 +9,7 @@ The flag tables, fixed values and policy schema below are generated from the cod
 
 ## `mcp-svid-authz`
 
-JWT-SVID to access token bridge (POC)
+JWT-SVID to access token bridge
 
 | Flag | Default | Meaning |
 |---|---|---|
@@ -52,7 +52,7 @@ Fixed values:
 
 ## `mcp-svid-notes`
 
-Notes MCP server (POC)
+Notes MCP server (reference resource server)
 
 | Flag | Default | Meaning |
 |---|---|---|

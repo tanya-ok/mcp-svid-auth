@@ -1,6 +1,6 @@
 # Contributing
 
-This is a proof of concept. Small, focused changes are welcome.
+Small, focused changes are welcome. Read `docs/production-readiness.md` for open gaps.
 
 ## Setup and checks
 

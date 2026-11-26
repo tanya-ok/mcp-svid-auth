@@ -1,7 +1,7 @@
 # Security model
 
 !!! warning
-    This is a proof of concept. Do not deploy it to protect real data. Report vulnerabilities privately through GitHub private vulnerability reporting, not in a public issue.
+    Not yet production-ready. Do not deploy it to protect real data until the remaining items in [production readiness](production-readiness.md) are closed for your environment. Report vulnerabilities privately through GitHub private vulnerability reporting, not in a public issue.
 
 ## Threat model
 
@@ -144,7 +144,7 @@ The token endpoint accepts `grant_type=urn:ietf:params:oauth:grant-type:token-ex
 
 ## Non-goals
 
-- Not production software. No HA or distributed rate limits; planned in-process key rotation and local cost budgets only. Plain HTTP inside the demo network.
+- Not yet production-ready. Replay caches and rate budgets are per process: no HA or distributed rate limiting. No KMS or HSM signer. The lab network still runs plain HTTP although both servers support HTTPS and mTLS. See [production readiness](production-readiness.md).
 - Not a replacement for an MCP gateway such as agentgateway. It shows the token flow a gateway could implement.
 - No human user delegation. Token exchange delegates between workloads that hold tokens from this server; a human identity provider token is not accepted as `subject_token`. Not exercised in the Kubernetes demo yet.
 - No X.509-SVID or WIT-SVID client authentication. JWT-SVID only.
@@ -153,11 +153,11 @@ The token endpoint accepts `grant_type=urn:ietf:params:oauth:grant-type:token-ex
 
 | Gap | Effect | Where |
 |---|---|---|
-| No access token `jti` tracking | A stolen access token is usable until it expires (5 min). | `mcp_server.py` |
+| Access token `jti` state per process | Revocation (`--revocation-file`) and the call limit (`--max-calls-per-token`) apply per replica. Without them, or without DPoP, a stolen Bearer token is usable until it expires (5 min). | `revocation.py` |
 | JWT-SVID reuse allowed in the demo | `allow-reuse-within-lifetime`: a stolen SVID mints tokens until it expires (max 300s). Needed because the SPIRE 1.15.3 agent re-serves cached SVIDs. | `deploy/kubernetes/services.yaml` |
 | JWT-SVID seen-set per process | `reject` mode only. Replicas or a restart forget seen `jti` values. | `ReplayCache` |
-| Signing keys in memory | Planned rotation preserves public-key overlap; an abrupt restart still loses old keys. | `AuthzServer.signing_key` |
-| Checkpoint storage trust | Links detect internal edits but not tail truncation. A separately trusted terminal checkpoint detects suffix deletion and chain replacement; an attacker who can replace both defeats that protection. No signatures or managed external storage. See [Audit integrity](audit.md). | `audit.py` |
+| Signing keys in memory by default | Planned rotation preserves public-key overlap; an abrupt restart loses old keys unless `--signing-key-file` supplies a persistent key. No KMS or HSM signer. | `AuthzServer.signing_key`, `signing_keys.py` |
+| Checkpoint storage trust | Links detect internal edits but not tail truncation. A separately trusted terminal checkpoint detects suffix deletion and chain replacement. An Ed25519 signed checkpoint, verified with `--checkpoint-public-key`, also detects a checkpoint the attacker rebuilt. No managed external log storage. See [Audit integrity](audit.md). | `audit.py` |
 | Upstream widens read access | `notes.search_upstream` on notes-a lets any caller with `notes:read` on notes-a read notes-b under notes-a's own grant, even without a notes-b grant (confused deputy widening). Fix pending a delegation chain. | `mcp_server.Upstream` |
 | Plain HTTP | No TLS inside the demo network. The demo agents run with `--allow-http --allow-private-network`. | `deploy/kubernetes/services.yaml`, `scripts/run_demo.py` |
 | Custom transports and dev URL flags | The default client binds the actual connection to a policy-checked IP with original TLS hostname verification. Injected HTTP factories must enforce equivalent checks; dev flags deliberately allow private addresses and HTTP. | `agent_client.UrlPolicy`, `pinned_transport.py` |
@@ -203,7 +203,7 @@ Limits:
 
 - The replay store is in memory and per process. After a restart, or on another replica, a recorded proof can be replayed until its 60-second window ends, and it still needs the matching token.
 - The proof key lives in the agent's process memory, not in hardware. An attacker who controls the agent process can sign proofs.
-- The demo runs over plain HTTP inside the lab. RFC 9449 expects TLS, and HTTPS integration is not verified yet.
+- The lab runs over plain HTTP. RFC 9449 expects TLS. The full DPoP flow is verified over real HTTPS sockets offline (`tests/test_https_end_to_end.py`), not yet in the lab.
 - RFC 8693 exchange refuses a bound subject token, because no holder proof for the subject exists yet. Exchange in a DPoP-only deployment therefore has no usable subject tokens.
 - The stdio wrapper refuses a bound token: its child reads a token file and has no proof key.
 - The upstream client of `notes.search_upstream` does not send proofs, so an upstream authorization server in DPoP mode refuses it.
