@@ -44,6 +44,7 @@ from mcp_svid_auth.spiffe_keys import (
     WorkloadApiResolver,
     spiffe_trust_domain,
 )
+from mcp_svid_auth.tls import add_tls_server_flags, tls_server_kwargs
 
 CLIENT_ASSERTION_TYPE = "urn:ietf:params:oauth:client-assertion-type:jwt-spiffe"
 ACCESS_TOKEN_ALG = "ES256"  # noqa: S105 - algorithm name, not a secret
@@ -558,11 +559,22 @@ class AuthzServer:
         async def metadata(_: Request) -> Response:
             return JSONResponse(self.metadata())
 
+        async def healthz(_: Request) -> Response:
+            return JSONResponse({"status": "ok"})
+
+        async def readyz(_: Request) -> Response:
+            # A failed policy reload denies every request; report that as not ready.
+            if not self.policy.grants:
+                return JSONResponse({"status": "policy_unavailable"}, status_code=503)
+            return JSONResponse({"status": "ok"})
+
         return Starlette(
             routes=[
                 Route("/token", self.token_endpoint, methods=["POST"]),
                 Route("/jwks.json", jwks, methods=["GET"]),
                 Route("/.well-known/oauth-authorization-server", metadata, methods=["GET"]),
+                Route("/healthz", healthz, methods=["GET"]),
+                Route("/readyz", readyz, methods=["GET"]),
             ]
         )
 
@@ -754,13 +766,16 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_SIGNING_ROTATION_SECONDS,
         help="planned signing rotation interval; zero disables, minimum 60 seconds",
     )
+    add_tls_server_flags(parser)
     return parser
 
 
 def main(argv: list[str] | None = None) -> None:
     import uvicorn  # noqa: PLC0415
 
-    args = build_parser().parse_args(argv)
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    tls = tls_server_kwargs(args, parser, public_url=args.issuer)
 
     policy = Policy.load(args.policy)
     resolver: KeyResolver
@@ -784,7 +799,7 @@ def main(argv: list[str] | None = None) -> None:
         policy_path=args.policy,
     )
     install_policy_reload(server, args.policy_poll_seconds)
-    uvicorn.run(server.app(), host=args.host, port=args.port)
+    uvicorn.run(server.app(), host=args.host, port=args.port, **tls)
 
 
 if __name__ == "__main__":

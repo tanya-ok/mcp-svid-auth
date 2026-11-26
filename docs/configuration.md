@@ -30,6 +30,9 @@ JWT-SVID to access token bridge (POC)
 | `--token-requests-per-second` | `50` | Per-process token endpoint requests per fixed one-second window |
 | `--subject-requests-per-second` | `10` | Exchanges per authorized subject per fixed one-second window |
 | `--signing-rotation-seconds` | `3600` | Planned signing rotation interval; zero disables, minimum 60 seconds |
+| `--tls-cert` | none | PEM server certificate chain; enables HTTPS with --tls-key |
+| `--tls-key` | none | PEM private key for --tls-cert |
+| `--tls-client-ca` | none | PEM CA bundle; when set, every client must present a certificate it signed (mTLS) |
 
 Fixed values:
 
@@ -63,6 +66,10 @@ Notes MCP server (POC)
 | `--socket` | none | Workload API socket for the upstream SVID, default SPIFFE_ENDPOINT_SOCKET |
 | `--allow-http` | off | Dev only: accept plain http URLs for discovery, token requests and tool calls |
 | `--allow-private-network` | off | Dev only: accept hosts that resolve to private, loopback or link-local addresses |
+| `--ca-file` | none | PEM CA bundle that replaces the system trust store for outbound HTTPS |
+| `--tls-cert` | none | PEM server certificate chain; enables HTTPS with --tls-key |
+| `--tls-key` | none | PEM private key for --tls-cert |
+| `--tls-client-ca` | none | PEM CA bundle; when set, every client must present a certificate it signed (mTLS) |
 
 Fixed values:
 
@@ -90,6 +97,7 @@ Agent that authenticates with its JWT-SVID
 | `--trusted-issuer` | required | Authorization server issuer the agent may mint SVIDs for; repeatable, exact match |
 | `--allow-http` | off | Dev only: accept plain http URLs for discovery, token requests and tool calls |
 | `--allow-private-network` | off | Dev only: accept hosts that resolve to private, loopback or link-local addresses |
+| `--ca-file` | none | PEM CA bundle that replaces the system trust store for outbound HTTPS |
 | `--spiffe-id` | none | Sent as client_id |
 | `--dpop` | off | Use RFC 9449 sender-constrained tokens with a key held in process memory |
 | `--socket` | none | Workload API socket, default SPIFFE_ENDPOINT_SOCKET |
@@ -107,6 +115,7 @@ Run a stdio MCP server with a short-lived token from the Workload API
 | `--trusted-issuer` | required | Authorization server issuer the wrapper may mint SVIDs for; repeatable, exact match |
 | `--allow-http` | off | Dev only: accept plain http URLs for discovery, token requests and tool calls |
 | `--allow-private-network` | off | Dev only: accept hosts that resolve to private, loopback or link-local addresses |
+| `--ca-file` | none | PEM CA bundle that replaces the system trust store for outbound HTTPS |
 | `--socket` | none | Workload API socket, default SPIFFE_ENDPOINT_SOCKET |
 | `--refresh-margin` | `60` | Seconds before expiry to refresh |
 | `--export-token-env` | off | Also set MCP_ACCESS_TOKEN (weaker: visible in the environment); the child is stopped when that token expires |

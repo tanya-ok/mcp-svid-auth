@@ -20,6 +20,7 @@ import asyncio
 import contextlib
 import hashlib
 import json
+import ssl
 import time
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, field
@@ -70,6 +71,7 @@ from mcp_svid_auth.audit import AuditLog
 from mcp_svid_auth.budgets import WindowBudget
 from mcp_svid_auth.dpop import DPOP_ALG, DPoPError, ProofReplayStore, verify_proof
 from mcp_svid_auth.spiffe_keys import SvidSource, WorkloadApiSvidSource
+from mcp_svid_auth.tls import add_tls_server_flags, client_context, tls_server_kwargs
 
 JWKS_CACHE_SECONDS = 60
 JWKS_MIN_REFETCH_SECONDS = 10
@@ -80,6 +82,7 @@ MAX_ACCESS_TOKEN_BYTES = 8192
 MAX_JWKS_BYTES = 65_536
 MAX_JWKS_KEYS = 16
 DEFAULT_TOKEN_VERIFICATIONS_PER_SECOND = 256
+HEALTH_PATHS = ("/healthz", "/readyz")
 
 
 class JwksUnavailableError(Exception):
@@ -118,6 +121,7 @@ class JwksFetcher:
     jwks_uri: str
     transport: httpx2.AsyncBaseTransport | None = None
     clock: Callable[[], float] = time.monotonic
+    verify: ssl.SSLContext | bool = True
     _cached: dict[str, Any] | None = None
     _fetched_at: float = 0.0
     _attempted_at: float | None = None
@@ -144,7 +148,11 @@ class JwksFetcher:
         try:
             async with (
                 httpx2.AsyncClient(
-                    transport=self.transport, timeout=5, follow_redirects=False
+                    transport=self.transport,
+                    timeout=5,
+                    follow_redirects=False,
+                    trust_env=False,
+                    verify=self.verify,
                 ) as client,
                 client.stream("GET", self.jwks_uri) as response,
             ):
@@ -794,10 +802,24 @@ def create_app(  # noqa: PLR0913
     async def protected_resource_metadata(_: Request) -> Response:
         return JSONResponse(prm)
 
+    async def healthz(_: Request) -> Response:
+        return JSONResponse({"status": "ok"})
+
+    async def readyz(_: Request) -> Response:
+        try:
+            _find_key(await source.get(), None)
+        except (JwksUnavailableError, JwksInvalidError):
+            return JSONResponse({"status": "unavailable"}, status_code=503)
+        return JSONResponse({"status": "ok"})
+
     prm_path = urlsplit(metadata_url).path
+    if path in HEALTH_PATHS:
+        raise ValueError("resource path collides with a health endpoint")
     routes: list[Any] = [
         Route(path, endpoint=endpoint),
         Route(prm_path, endpoint=protected_resource_metadata, methods=["GET"]),
+        Route("/healthz", endpoint=healthz, methods=["GET"]),
+        Route("/readyz", endpoint=readyz, methods=["GET"]),
     ]
     return Starlette(
         routes=routes,
@@ -852,6 +874,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--socket", help="Workload API socket for the upstream SVID, default SPIFFE_ENDPOINT_SOCKET"
     )
     add_url_flags(parser)
+    add_tls_server_flags(parser)
     return parser
 
 
@@ -876,12 +899,15 @@ def main(argv: list[str] | None = None) -> None:
         name=args.name,
         resource=args.resource,
         issuer=issuer,
-        jwks=JwksFetcher(args.jwks_uri or f"{issuer}/jwks.json"),
+        jwks=JwksFetcher(
+            args.jwks_uri or f"{issuer}/jwks.json", verify=client_context(args.ca_file)
+        ),
         audit=AuditLog(path=args.audit_log, component=f"mcp_server:{args.name}"),
         upstream=upstream,
         dpop_required=args.dpop_required,
     )
-    uvicorn.run(app, host=args.host, port=args.port)
+    tls = tls_server_kwargs(args, parser, public_url=args.resource)
+    uvicorn.run(app, host=args.host, port=args.port, **tls)
 
 
 if __name__ == "__main__":

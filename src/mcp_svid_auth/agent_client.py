@@ -19,6 +19,7 @@ import ipaddress
 import json
 import re
 import socket
+import ssl
 import sys
 from collections.abc import Awaitable, Callable, Collection
 from dataclasses import dataclass, field
@@ -33,6 +34,7 @@ from mcp_svid_auth.authz import CLIENT_ASSERTION_TYPE
 from mcp_svid_auth.dpop import DPoPAuth, DPoPKey
 from mcp_svid_auth.pinned_transport import PinnedTransport
 from mcp_svid_auth.spiffe_keys import SvidSource, WorkloadApiSvidSource
+from mcp_svid_auth.tls import add_ca_flag, client_context
 
 HttpFactory = Callable[..., httpx2.AsyncClient]
 
@@ -106,6 +108,8 @@ class UrlPolicy:
     allow_http: bool = False
     allow_private: bool = False
     resolve: Resolver = field(default=resolve_host, compare=False)
+    # Certificate verification for the default transport: system trust or a private CA context.
+    tls_verify: ssl.SSLContext | bool = field(default=True, compare=False)
 
     async def check(self, url: str) -> None:
         self._host(url)
@@ -190,7 +194,7 @@ def default_http(url_policy: UrlPolicy = STRICT_URLS, **kwargs: Any) -> httpx2.A
     return httpx2.AsyncClient(
         timeout=httpx2.Timeout(30, read=300),
         trust_env=False,
-        transport=PinnedTransport(url_policy.addresses),
+        transport=PinnedTransport(url_policy.addresses, verify=url_policy.tls_verify),
         **kwargs,
     )
 
@@ -441,11 +445,16 @@ def add_url_flags(parser: argparse.ArgumentParser) -> None:
         action="store_true",
         help="dev only: accept hosts that resolve to private, loopback or link-local addresses",
     )
+    add_ca_flag(parser)
 
 
 def url_policy_from_args(args: argparse.Namespace) -> UrlPolicy:
     """Build the URL policy; a relaxed policy is announced on stderr as a JSON event."""
-    policy = UrlPolicy(allow_http=args.allow_http, allow_private=args.allow_private_network)
+    policy = UrlPolicy(
+        allow_http=args.allow_http,
+        allow_private=args.allow_private_network,
+        tls_verify=client_context(args.ca_file),
+    )
     if policy.allow_http or policy.allow_private:
         event = {
             "event": "url_policy_relaxed",

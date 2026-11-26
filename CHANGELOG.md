@@ -9,6 +9,9 @@ published as a package.
 
 ### Added
 
+- HTTPS listeners for the token endpoint and MCP server (`--tls-cert`, `--tls-key`), optional client certificate verification (`--tls-client-ca`), TLS 1.2 minimum and a stderr event for plain HTTP listeners off loopback.
+- `--ca-file` for outbound HTTPS from the agent, stdio wrapper and MCP server (JWKS and upstream), with verification kept on.
+- `/healthz` and `/readyz` endpoints. Readiness fails when the grant policy failed to load or the JWKS is unavailable.
 - Opt-in RFC 9449 DPoP: `--dpop-required` on the token endpoint and MCP server, `--dpop` on the agent. Bound tokens sent as Bearer are refused in every mode, and bound subject tokens are refused at token exchange. Not verified over HTTPS; the FHIR gateway stays Bearer only.
 - Opt-in RFC 8693 token exchange (`--token-exchange`): on-behalf-of access tokens with an `act` claim, scopes bounded by subject and actor, expiry bounded by the subject token, no chained delegation.
 - In-process tool response poisoning scenario (`make attack-scenarios`) with a design check for RFC 8693 style delegated scope narrowing.
