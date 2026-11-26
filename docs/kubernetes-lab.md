@@ -135,11 +135,41 @@ the ones behind `make up`, `make demo` and `make down`, run through `uv run`.
 | Instance creation, node ready | Passed |
 | First image build | Failed: the lab inventory predated the bridge `tsconfig.build.json` and the FHIR pnpm workspace file and pnpm version; corrected |
 | First demo run | Scenario 4 failed: the audit filter expected `record_id` first, but schema 2 records start with `schema_version`; corrected |
-| Two reruns on the same stack | The first failed at scenario 11 (tool outcome mismatch) and was not diagnosed. The second, after a manual authz restart, failed at scenario 8 because the resource server had not yet refreshed the issuer keys. Neither recurred on a fresh stack |
+| Reruns on the same stack | Diagnosed on 2026-11-26, see below |
 | `make down`, then fresh `make up` and demo | 22 of 22 scenarios passed; report written 13:09 UTC |
 | Admission negative test | With the policy: 4 of 4. With both bindings deleted: the three denial checks failed, the operator launch passed. Bindings restored: 4 of 4 |
 | TLS spot check from inside the VM | Plain HTTP to the issuer returned no HTTP response; HTTPS with the lab CA returned 200; HTTPS with system trust only failed certificate verification |
 | Teardown | `down` removed the namespaces, RBAC and both policies; the VM was stopped |
+
+### Rerunning the demo on a running stack
+
+The demo is meant for a fresh stack, but it can be rerun without `make down`
+since 2026-11-26. Three defects stopped that, found by repeated reruns:
+
+- Scenario 11 restarts authz, which has an ephemeral signing key, so every earlier key
+  disappears. notes-a kept its cached upstream token (300 seconds, refreshed 30 seconds
+  early) and notes-b rejected it with `invalid_token` until it expired. Reproduced by
+  restarting authz alone: 9 of 10 upstream calls over the next minute returned 401, and
+  a direct call to notes-b worked. notes-a now replaces a rejected token once with a new
+  one fetched under its own SVID (`tests/test_upstream_retry.py`); after the change 10 of
+  10 calls passed. This also explains the scenario 8 failures on reruns.
+- The wait for the restarted key matched the 401 text exactly, but the agent appends
+  `resource_metadata`, so a pending key refresh was reported as a mismatch (scenario 11).
+  The resource server refetches keys at most every 10 seconds, so a 401 right after a
+  restart is expected and the wait now accepts it.
+- The FHIR audit checker needs exactly four records, so the second run saw eight. The demo
+  now passes it only the records written since its own start; the checker is unchanged.
+
+Counts on one stack without `down` (all 22 scenarios each time unless noted). Before any
+fix: the first run passed, the next failed at scenario 8, and a following partial run
+passed 8 to 14. With only the token fix: two reruns reached scenario 17 and failed at
+scenario 18 (audit count). With the token and audit fixes: three reruns, two passed and
+one failed at scenario 11 (the exact 401 match). With all three fixes: four of four
+reruns passed. An earlier scenario 11 failure on 2026-11-26 matches the exact-match
+defect but was not captured with its output, so that link is likely, not proven.
+
+Replay protection, single-use assertions and quotas are not relaxed. Admission probes, audit
+chains and stored notes carry over between runs, which the checks tolerate.
 
 Not run on 2026-11-26: the Headlamp viewer in a browser (its Deployment was applied
 and running), the ZITADEL identity profile, the memory measurement and a repeat of the

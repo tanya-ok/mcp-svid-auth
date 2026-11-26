@@ -120,7 +120,8 @@ def wait_for_restart_key(*, timeout: float = 120) -> None:
     while True:
         rows = agent(scope="notes:read", extra=["--call", SEARCH])
         calls = [row for row in rows if row.get("event") == "call"]
-        pending = len(calls) == 1 and calls[0].get("result") == (
+        # The agent appends resource_metadata to the challenge, so match the prefix.
+        pending = len(calls) == 1 and str(calls[0].get("result")).startswith(
             'HTTP 401: Bearer error="invalid_token"'
         )
         if not pending:
@@ -173,6 +174,25 @@ def is_audit_record(line: str) -> bool:
     except ValueError:
         return False
     return isinstance(parsed, dict) and "record_id" in parsed and "prev_hash" in parsed
+
+
+FHIR_RECORD_MARKER = '"caller_identity"'
+
+
+def new_fhir_records(output: str, before: int) -> str:
+    """The FHIR log without its first `before` audit records, so a rerun checks only its own.
+
+    The checker still requires exactly this run's records, with no tolerance for extras.
+    """
+    seen = 0
+    kept = []
+    for line in output.splitlines():
+        if FHIR_RECORD_MARKER in line:
+            seen += 1
+            if seen <= before:
+                continue
+        kept.append(line)
+    return "\n".join(kept) + "\n"
 
 
 def audit_lines(service: str) -> list[str]:
@@ -342,6 +362,8 @@ def scenarios(record: Any) -> None:  # noqa: PLR0915 - numbered demonstration
         (DEPLOY / f".data/{service}.jsonl").write_text("\n".join(lines) + "\n")
         (DEPLOY / f".data/{service}.checkpoint.json").write_text(checkpoint.to_json())
     record(14, "audit links verify; checkpoint detects tail deletion")
+    fhir_log = command(["logs", "--no-log-prefix", "fhir"]).splitlines()
+    fhir_before = sum(FHIR_RECORD_MARKER in line for line in fhir_log)
     for number, mode, service in (
         (15, "allowed", "agent-research"),
         (16, "intruder", "agent-intruder"),
@@ -371,7 +393,7 @@ def scenarios(record: Any) -> None:  # noqa: PLR0915 - numbered demonstration
             str(repo_path("hipaa-fhir-mcp") / "deploy/kubernetes/probe_fhir.py"),
             "audit",
         ],
-        input=output,
+        input=new_fhir_records(output, fhir_before),
         text=True,
         capture_output=True,
         check=False,

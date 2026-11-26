@@ -64,7 +64,7 @@ def test_restart_wait_retries_only_pending_key_and_requires_success(monkeypatch:
         {
             "event": "call",
             "tool": "notes.search",
-            "result": 'HTTP 401: Bearer error="invalid_token"',
+            "result": 'HTTP 401: Bearer error="invalid_token", resource_metadata="https://n/x"',
         },
     ]
     good = [token, {"event": "call", "tool": "notes.search", "result": "welcome"}]
@@ -97,3 +97,14 @@ def test_restart_wait_retries_only_pending_key_and_requires_success(monkeypatch:
 )
 def test_audit_records_are_recognised_by_content_not_key_order(line: str, expected: bool) -> None:
     assert demo.is_audit_record(line) is expected
+
+
+def test_a_rerun_checks_only_its_own_fhir_audit_records() -> None:
+    old = ['{"caller_identity":"a"}'] * 4
+    new = ['{"caller_identity":"b"}'] * 4
+    log = "\n".join([*old, "noise", *new])
+    kept = demo.new_fhir_records(log, 4)
+    assert kept.count("caller_identity") == 4 and '"a"' not in kept and "noise" in kept
+    assert demo.new_fhir_records(log, 0).count("caller_identity") == 8
+    # An extra record in this run is still visible to the exact-count checker.
+    assert demo.new_fhir_records(log + '\n{"caller_identity":"c"}', 4).count("caller_identity") == 5
