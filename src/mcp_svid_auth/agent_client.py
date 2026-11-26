@@ -363,35 +363,44 @@ async def call_tool(  # noqa: PLR0913
     return prefix + " ".join(t for t in texts if t)
 
 
-async def run(args: argparse.Namespace) -> int:
-    source: SvidSource = WorkloadApiSvidSource(socket_path=args.socket)
+async def run(
+    args: argparse.Namespace,
+    source: SvidSource | None = None,
+    http: HttpFactory = default_http,
+) -> int:
+    svids: SvidSource = source or WorkloadApiSvidSource(socket_path=args.socket)
     urls = url_policy_from_args(args)
     dpop = DPoPKey() if args.dpop else None
-    token = await fetch_access_token(
-        args.resource,
-        source,
-        spiffe_id=args.spiffe_id,
-        scope=args.scope,
-        trusted_issuers=args.trusted_issuer,
-        url_policy=urls,
-        dpop=dpop,
-    )
-    print(
-        json.dumps(
-            {
-                "event": "token",
-                "resource": args.resource,
-                "scope": token["scope"],
-                "expires_in": token["expires_in"],
-            }
+
+    async def new_token() -> dict[str, Any]:
+        token = await fetch_access_token(
+            args.resource,
+            svids,
+            spiffe_id=args.spiffe_id,
+            scope=args.scope,
+            trusted_issuers=args.trusted_issuer,
+            url_policy=urls,
+            dpop=dpop,
+            **({"http": http} if http is not default_http else {}),
         )
-    )
+        event = {
+            "event": "token",
+            "resource": args.resource,
+            "scope": token["scope"],
+            "expires_in": token["expires_in"],
+        }
+        print(json.dumps(event))
+        return token
+
+    token = await new_token()
     target = args.steal_token or args.resource
     if args.steal_token:
         print(json.dumps({"event": "replay", "issued_for": args.resource, "sent_to": target}))
-    for tool, arguments in args.call or DEFAULT_CALLS:
+    for index, (tool, arguments) in enumerate(args.call or DEFAULT_CALLS):
+        if args.token_per_call and index > 0:
+            token = await new_token()
         outcome = await call_tool(
-            target, token["access_token"], tool, arguments, url_policy=urls, dpop=dpop
+            target, token["access_token"], tool, arguments, http=http, url_policy=urls, dpop=dpop
         )
         print(json.dumps({"event": "call", "server": target, "tool": tool, "result": outcome}))
     return 0
@@ -509,6 +518,12 @@ def build_parser() -> argparse.ArgumentParser:
         type=call_arg,
         metavar="TOOL=JSON",
         help="tool to call with JSON arguments; repeatable; default notes.search then notes.write",
+    )
+    parser.add_argument(
+        "--token-per-call",
+        action="store_true",
+        help="fetch a new token, with a new SVID, before every tool call; "
+        "for servers with --max-calls-per-token 1",
     )
     parser.add_argument(
         "--steal-token",

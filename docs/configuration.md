@@ -137,6 +137,7 @@ Agent that authenticates with its JWT-SVID
 | `--dpop` | off | Use RFC 9449 sender-constrained tokens with a key held in process memory |
 | `--socket` | none | Workload API socket, default SPIFFE_ENDPOINT_SOCKET |
 | `--call` | none | Tool to call with JSON arguments; repeatable; default notes.search then notes.write |
+| `--token-per-call` | off | Fetch a new token, with a new SVID, before every tool call; for servers with --max-calls-per-token 1 |
 | `--steal-token` | none | Demo: send the token issued for --resource to OTHER_RESOURCE instead |
 
 ## `mcp-svid-stdio`
