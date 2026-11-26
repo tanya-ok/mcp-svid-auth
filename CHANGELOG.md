@@ -15,6 +15,7 @@ published as a package.
 - Opt-in access token `jti` tracking on the MCP server (`--max-calls-per-token`): each token authorizes at most N tool calls, bounded memory, refuses new tokens when full.
 - Ed25519 signed audit checkpoints (`--signing-key`, `--checkpoint-public-key`), so a checkpoint rebuilt or re-signed by the log writer is detected.
 - `--allow-private-host HOST` on the agent, stdio wrapper and MCP server: an exact host name may resolve to a private address while https and all other address checks stay on, replacing the blanket dev flag for in-cluster names.
+- `--signing-key-file` loads an operator-provided P-256 signing key with owner-only permissions and a stable RFC 7638 `kid`, so tokens survive restarts and replicas share one key; `--verification-key-file` publishes previous public keys for rotation overlap.
 - `/healthz` and `/readyz` endpoints. Readiness fails when the grant policy failed to load or the JWKS is unavailable.
 - Opt-in RFC 9449 DPoP: `--dpop-required` on the token endpoint and MCP server, `--dpop` on the agent. Bound tokens sent as Bearer are refused in every mode, and bound subject tokens are refused at token exchange. Not verified over HTTPS; the FHIR gateway stays Bearer only.
 - Opt-in RFC 8693 token exchange (`--token-exchange`): on-behalf-of access tokens with an `act` claim, scopes bounded by subject and actor, expiry bounded by the subject token, no chained delegation.

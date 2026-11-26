@@ -42,6 +42,12 @@ from mcp_svid_auth.revocation import (
     UNAVAILABLE,
     RevocationList,
 )
+from mcp_svid_auth.signing_keys import (
+    MAX_PUBLISHED_KEYS,
+    SigningKeyError,
+    load_signing_key,
+    load_verification_key,
+)
 from mcp_svid_auth.spiffe_keys import (
     JWT_SVID_ALGORITHMS,
     KeyResolver,
@@ -170,6 +176,8 @@ class AuthzServer:
     proof_replay: ProofReplayStore = field(default_factory=ProofReplayStore)
     policy_path: Path | None = None
     revocation: RevocationList | None = None
+    # Previous public keys published for overlap after an operator-managed rotation.
+    published_keys: list[dict[str, Any]] = field(default_factory=list)
     _policy_digest: str | None = None
     _reload_lock: threading.Lock = field(default_factory=threading.Lock)
 
@@ -258,6 +266,7 @@ class AuthzServer:
             self._advance_signing_keys()
             keys = [_public_jwk(self.signing_key, self.kid)]
             keys.extend(jwk for jwk, _ in self._retired_keys)
+            keys.extend(jwk for jwk in self.published_keys if jwk["kid"] != self.kid)
             if self._pending_key is not None:
                 keys.append(_public_jwk(self._pending_key[0], self._pending_key[1]))
             return {"keys": keys}
@@ -363,6 +372,7 @@ class AuthzServer:
         with self._signing_lock:
             keys = {self.kid: _public_jwk(self.signing_key, self.kid)}
             keys.update({jwk["kid"]: jwk for jwk, _ in self._retired_keys})
+            keys.update({jwk["kid"]: jwk for jwk in self.published_keys if jwk["kid"] != self.kid})
         jwk = keys.get(str(header.get("kid")))
         if jwk is None:
             raise AuthError("invalid_grant", "subject token key unknown")
@@ -790,6 +800,19 @@ def build_parser() -> argparse.ArgumentParser:
         help="planned signing rotation interval; zero disables, minimum 60 seconds",
     )
     parser.add_argument(
+        "--signing-key-file",
+        type=Path,
+        help="PEM P-256 private key, owner-only permissions, kept across restarts; "
+        "needs --signing-rotation-seconds 0",
+    )
+    parser.add_argument(
+        "--verification-key-file",
+        action="append",
+        type=Path,
+        default=[],
+        help="PEM public key of a previous signing key, published for overlap; repeatable",
+    )
+    parser.add_argument(
         "--revocation-file",
         type=Path,
         help="YAML or JSON list of blocked SPIFFE IDs (and revoked jti) refused new tokens",
@@ -804,12 +827,31 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _key_options(args: argparse.Namespace, parser: argparse.ArgumentParser) -> dict[str, Any]:
+    """AuthzServer key arguments from the key file flags; exits on unusable input."""
+    if args.verification_key_file and not args.signing_key_file:
+        parser.error("--verification-key-file needs --signing-key-file")
+    if len(args.verification_key_file) > MAX_PUBLISHED_KEYS:
+        parser.error(f"at most {MAX_PUBLISHED_KEYS} --verification-key-file values")
+    if args.signing_key_file is None:
+        return {}
+    if args.signing_rotation_seconds != 0:
+        parser.error("--signing-key-file needs --signing-rotation-seconds 0")
+    try:
+        key, kid = load_signing_key(args.signing_key_file)
+        published = [load_verification_key(path) for path in args.verification_key_file]
+    except SigningKeyError as exc:
+        parser.error(str(exc))
+    return {"signing_key": key, "kid": kid, "published_keys": published}
+
+
 def main(argv: list[str] | None = None) -> None:
     import uvicorn  # noqa: PLC0415
 
     parser = build_parser()
     args = parser.parse_args(argv)
     tls = tls_server_kwargs(args, parser, public_url=args.issuer)
+    keys = _key_options(args, parser)
 
     policy = Policy.load(args.policy)
     resolver: KeyResolver
@@ -828,6 +870,7 @@ def main(argv: list[str] | None = None) -> None:
         request_budget=WindowBudget(args.token_requests_per_second, max_keys=1),
         subject_budget=WindowBudget(args.subject_requests_per_second),
         signing_rotation_seconds=args.signing_rotation_seconds,
+        **keys,
         token_exchange=args.token_exchange,
         dpop_required=args.dpop_required,
         policy_path=args.policy,

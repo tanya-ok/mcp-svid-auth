@@ -30,6 +30,8 @@ JWT-SVID to access token bridge (POC)
 | `--token-requests-per-second` | `50` | Per-process token endpoint requests per fixed one-second window |
 | `--subject-requests-per-second` | `10` | Exchanges per authorized subject per fixed one-second window |
 | `--signing-rotation-seconds` | `3600` | Planned signing rotation interval; zero disables, minimum 60 seconds |
+| `--signing-key-file` | none | PEM P-256 private key, owner-only permissions, kept across restarts; needs --signing-rotation-seconds 0 |
+| `--verification-key-file` | `[]` | PEM public key of a previous signing key, published for overlap; repeatable |
 | `--revocation-file` | none | YAML or JSON list of blocked SPIFFE IDs (and revoked jti) refused new tokens |
 | `--revocation-poll-seconds` | `5.0` | Maximum delay before a changed revocation file applies |
 | `--tls-cert` | none | PEM server certificate chain; enables HTTPS with --tls-key |
