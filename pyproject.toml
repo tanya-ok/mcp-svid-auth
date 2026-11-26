@@ -59,6 +59,25 @@ docs = [
 packages = ["src/mcp_svid_auth"]
 
 [tool.hatch.build.targets.sdist]
+# Explicit allowlist: stray local directories (virtual environments, caches) never ship.
+only-include = [
+    "src",
+    "tests",
+    "docs",
+    "scripts",
+    "deploy",
+    "examples",
+    "README.md",
+    "CHANGELOG.md",
+    "CONTRIBUTING.md",
+    "SECURITY.md",
+    "LICENSE",
+    "NOTICE",
+    "Makefile",
+    "pyproject.toml",
+    "uv.lock",
+    "zensical.toml",
+]
 exclude = [
     "/.ai-assurance",
     "/.beads",
